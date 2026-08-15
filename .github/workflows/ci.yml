@@ -23,8 +23,8 @@ jobs:
           node-version: "22"
           cache: npm
       - run: npm ci
-      - name: Typecheck
-        run: npx tsc -p tsconfig.json --noEmit
+      - name: Typecheck (src + test)
+        run: npm run typecheck
       - name: Unit tests
         run: npm test
 
@@ -58,6 +58,17 @@ jobs:
       # end-to-end render as a bonus.
       - name: Build + smoke-test the lite archive (${{ matrix.label }})
         run: npm run package:lite
+      # Phase 7 hardening: cancel/cleanup + tmp-dir integration test
+      # (test/integration/cancel-cleanup.test.ts) and the golden-output
+      # regression render (test/integration/golden-render.test.ts). Both
+      # self-skip with a clear reason wherever they can't run meaningfully
+      # (no ffmpeg on PATH, Windows' non-graceful child SIGINT semantics, no
+      # committed golden fixture yet — see that file and `npm run
+      # golden:update`), so this step is safe to run unconditionally.
+      - name: Integration tests (best-effort; self-skips without ffmpeg/Chromium)
+        run: npm test
+        env:
+          HFMPEG_INTEGRATION_TESTS: "1"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

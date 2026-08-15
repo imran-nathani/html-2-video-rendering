@@ -1,4 +1,5 @@
 import { getChannel, getHfmpegVersion, type Channel } from "../meta.js";
+import { color } from "./color.js";
 import type { CliError } from "./errors.js";
 
 interface HfmpegEnvelopeMeta {
@@ -36,6 +37,6 @@ export function printCliError(command: string, error: CliError, json: boolean): 
     });
     return;
   }
-  process.stderr.write(`Error: ${error.message}\n`);
-  if (error.hint) process.stderr.write(`${error.hint}\n`);
+  process.stderr.write(`${color.red("Error:")} ${error.message}\n`);
+  if (error.hint) process.stderr.write(`${color.dim(error.hint)}\n`);
 }

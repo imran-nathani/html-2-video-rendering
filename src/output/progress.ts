@@ -1,3 +1,5 @@
+import { color } from "./color.js";
+
 export type ProgressMode = "auto" | "bar" | "plain" | "json" | "none";
 
 const VALID_PROGRESS_MODES: readonly ProgressMode[] = ["auto", "bar", "plain", "json", "none"];
@@ -63,8 +65,14 @@ export function createProgressReporter(mode: ProgressMode, command: string): Pro
       const pct = Math.round(progress * 100);
       const width = 24;
       const filled = Math.round((pct / 100) * width);
-      const bar = "#".repeat(filled).padEnd(width, "-");
-      process.stderr.write(`\r[${bar}] ${String(pct).padStart(3, " ")}% ${stage}`.padEnd(100));
+      const plainBar = `${"#".repeat(filled)}${"-".repeat(width - filled)}`;
+      const plainLine = `[${plainBar}] ${String(pct).padStart(3, " ")}% ${stage}`;
+      // Colour the `#` fill only, then pad using the *plain* line's length —
+      // ANSI escapes are invisible but still count toward `.length`, which
+      // would otherwise under-pad the line and leave stale characters from a
+      // longer previous line on screen.
+      const coloredLine = plainLine.replace(plainBar, `${color.cyan("#".repeat(filled))}${"-".repeat(width - filled)}`);
+      process.stderr.write(`\r${coloredLine}${" ".repeat(Math.max(0, 100 - plainLine.length))}`);
     },
     end() {
       if (wrote) process.stderr.write("\n");

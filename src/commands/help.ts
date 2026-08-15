@@ -12,6 +12,13 @@ export function printTopLevelHelp(): void {
     "  completion  Emit a shell completion script (bash, zsh, fish, powershell)",
     "  help        Usage for hfmpeg or one command",
     "",
+    "Global flags (accepted by every command, in any position):",
+    "      --verbose             Extra diagnostics on stderr (resolved config, dependency paths, timings)",
+    "      --log-level <level>   silent | error | warn | info (default) | debug",
+    "      --no-color            Disable ANSI colour (also honours NO_COLOR)",
+    "      --tmp-dir <path>      Where render scratch directories are created (sets TMPDIR/TEMP/TMP)",
+    "      --cache-dir <path>    Where downloaded Chromium/FFmpeg live (lite builds; see `deps`)",
+    "",
     'Run "hfmpeg help <command>" for command-specific flags.',
   ];
   console.log(lines.join("\n"));

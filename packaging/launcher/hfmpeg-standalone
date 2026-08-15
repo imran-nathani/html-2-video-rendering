@@ -4,13 +4,17 @@
 # PATH required) and injects the bundled ffmpeg/ffprobe/chromium paths as
 # env overrides — but only when the user hasn't already set one, so
 # `--ffmpeg-path` / `HYPERFRAMES_FFMPEG_PATH` / etc. still win (flag > env >
-# bundled, same precedence as everywhere else — D11/§2.4).
+# bundled, same precedence as everywhere else — D11/§2.4). `HFMPEG_NO_BUNDLED_BINARIES`
+# (00-COMMANDS.md "Environment variables") skips this injection entirely, so
+# even a standalone archive can be forced to resolve everything from PATH.
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-: "${HYPERFRAMES_FFMPEG_PATH:="$DIR/bin/ffmpeg"}"
-: "${HYPERFRAMES_FFPROBE_PATH:="$DIR/bin/ffprobe"}"
-: "${PRODUCER_HEADLESS_SHELL_PATH:="$DIR/bin/chrome-headless-shell/chrome-headless-shell"}"
-export HYPERFRAMES_FFMPEG_PATH HYPERFRAMES_FFPROBE_PATH PRODUCER_HEADLESS_SHELL_PATH
+if [ -z "${HFMPEG_NO_BUNDLED_BINARIES:-}" ]; then
+  : "${HYPERFRAMES_FFMPEG_PATH:="$DIR/bin/ffmpeg"}"
+  : "${HYPERFRAMES_FFPROBE_PATH:="$DIR/bin/ffprobe"}"
+  : "${PRODUCER_HEADLESS_SHELL_PATH:="$DIR/bin/chrome-headless-shell/chrome-headless-shell"}"
+  export HYPERFRAMES_FFMPEG_PATH HYPERFRAMES_FFPROBE_PATH PRODUCER_HEADLESS_SHELL_PATH
+fi
 
 exec "$DIR/bin/node" "$DIR/dist/cli.js" "$@"

@@ -1,5 +1,6 @@
 import os from "node:os";
 import { getArchiveRoot, getChannel, getHfmpegVersion, getProducerVersion } from "../meta.js";
+import { color } from "../output/color.js";
 import { EXIT_CODES } from "../output/errors.js";
 import { printJsonEnvelope } from "../output/json.js";
 
@@ -119,8 +120,9 @@ export async function runDoctorCommand(json: boolean): Promise<number> {
     printJsonEnvelope({ ok: healthy, command: "doctor", data: { rows } });
   } else {
     for (const row of rows) {
-      const sourceSuffix = row.source ? ` (source: ${row.source})` : "";
-      console.log(`${row.ok ? "[ok]" : "[!!]"} ${row.name.padEnd(24, " ")} ${row.detail}${sourceSuffix}`);
+      const sourceSuffix = row.source ? color.dim(` (source: ${row.source})`, process.stdout) : "";
+      const marker = row.ok ? color.green("[ok]", process.stdout) : color.red("[!!]", process.stdout);
+      console.log(`${marker} ${row.name.padEnd(24, " ")} ${row.detail}${sourceSuffix}`);
     }
   }
 

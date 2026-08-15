@@ -16,7 +16,9 @@
     "start": "node dist/cli.js",
     "package:lite": "node packaging/build.mjs",
     "package:standalone": "node packaging/build.mjs --channel standalone",
-    "test": "tsx --test test/**/*.test.ts"
+    "test": "tsx --test test/**/*.test.ts",
+    "typecheck": "tsc -p tsconfig.test.json --noEmit",
+    "golden:update": "node packaging/generate-golden.mjs"
   },
   "dependencies": {
     "@hyperframes/producer": "0.7.103",

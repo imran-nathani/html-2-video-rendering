@@ -3,6 +3,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { getDependencyRows } from "./doctor.js";
 import { PINNED_CHROMIUM_VERSION } from "../meta.js";
+import { color } from "../output/color.js";
 import { CliError, EXIT_CODES, toCliError, usageError } from "../output/errors.js";
 import { printCliError, printJsonEnvelope } from "../output/json.js";
 
@@ -37,8 +38,17 @@ export function parseDepsFlags(argv: string[]): DepsFlags {
  * scans first (`00-PLAN.md` §2.2 item 4): `~/.cache/hyperframes/chrome`.
  * Installing here means `ensure` requires no env var / `--chromium-path` for
  * the render path to pick the binary up.
+ *
+ * `HFMPEG_CACHE_DIR` is set by the global `--cache-dir` flag
+ * (`args/global.ts`) — checked first so `hfmpeg --cache-dir X deps chromium
+ * ensure` and the subcommand-local `deps chromium ensure --cache-dir X`
+ * (which always wins; it's read directly into `DepsFlags.cacheDir` and only
+ * this function's *default* is consulted when that's absent) agree on one
+ * source of truth. Falls back to the un-overridden upstream-compatible
+ * default otherwise.
  */
 function defaultHyperframesChromeDir(): string {
+  if (process.env.HFMPEG_CACHE_DIR) return join(process.env.HFMPEG_CACHE_DIR, "hyperframes", "chrome");
   return join(homedir(), ".cache", "hyperframes", "chrome");
 }
 
@@ -98,8 +108,9 @@ async function runDepsStatus(flags: DepsFlags): Promise<number> {
     printJsonEnvelope({ ok, command: "deps", data: { rows } });
   } else {
     for (const row of rows) {
-      const sourceSuffix = row.source ? ` (source: ${row.source})` : "";
-      console.log(`${row.ok ? "[ok]" : "[!!]"} ${row.name.padEnd(16, " ")} ${row.detail}${sourceSuffix}`);
+      const sourceSuffix = row.source ? color.dim(` (source: ${row.source})`, process.stdout) : "";
+      const marker = row.ok ? color.green("[ok]", process.stdout) : color.red("[!!]", process.stdout);
+      console.log(`${marker} ${row.name.padEnd(16, " ")} ${row.detail}${sourceSuffix}`);
     }
   }
   return EXIT_CODES.OK;

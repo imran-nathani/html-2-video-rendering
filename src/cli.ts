@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { applyEnvAliases, applyGlobalFlags, extractGlobalFlags } from "./args/global.js";
 import { parseRenderArgs } from "./args/parse.js";
 import { runCompletionCommand } from "./commands/completion.js";
 import { runDepsCommand } from "./commands/deps.js";
@@ -28,8 +29,22 @@ const HELP_BY_COMMAND: Record<string, () => void> = {
 };
 
 async function main(): Promise<number> {
-  const argv = process.argv.slice(2);
-  const [command, ...rest] = argv;
+  // Global flags (`00-COMMANDS.md` "Global flags") work in any position, for
+  // every command, so they're stripped out of the raw argv up front — the
+  // command-name lookup and every command-specific parser below see argv as
+  // if these flags were never there.
+  let globalRest: string[];
+  try {
+    const { flags, rest: stripped } = extractGlobalFlags(process.argv.slice(2));
+    applyGlobalFlags(flags);
+    applyEnvAliases();
+    globalRest = stripped;
+  } catch (err) {
+    printCliError("hfmpeg", toCliError(err), process.argv.includes("--json"));
+    return toCliError(err).exitCode;
+  }
+
+  const [command, ...rest] = globalRest;
 
   if (!command || command === "--help" || command === "-h" || command === "help") {
     const target = command === "help" ? rest[0] : undefined;

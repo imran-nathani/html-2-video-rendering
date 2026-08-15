@@ -17,6 +17,7 @@ import {
   type ProgressMode,
 } from "../output/progress.js";
 import { extractCompositionRoot } from "../composition.js";
+import { logDebug } from "../output/log.js";
 import { readEntryHtml, resolveProjectInput } from "../project.js";
 import { loadProducer } from "../runtime/producer.js";
 
@@ -47,7 +48,7 @@ function parseIntFlag(name: string, raw: string, min: number, max: number): numb
 }
 
 /** Shared, format/quality-independent RenderConfig fields resolved once per `render` invocation. */
-interface RenderPlan {
+export interface RenderPlan {
   format: string;
   quality: "draft" | "standard" | "high";
   fps: { num: number; den: number };
@@ -65,7 +66,7 @@ interface RenderPlan {
   engineOverrides: Partial<EngineConfig>;
 }
 
-function buildRenderPlan(args: RenderArgs, output: string): RenderPlan {
+export function buildRenderPlan(args: RenderArgs, output: string): RenderPlan {
   let format = args.format;
   if (format && !VALID_FORMATS.has(format)) {
     throw usageError(
@@ -239,7 +240,7 @@ async function runLintGate(
   }
 }
 
-function checkOutputWritable(outputPath: string, format: string, overwrite: boolean): void {
+export function checkOutputWritable(outputPath: string, format: string, overwrite: boolean): void {
   if (format === "png-sequence") return;
   if (existsSync(outputPath) && !overwrite) {
     throw new CliError(
@@ -316,6 +317,59 @@ async function reportDryRun(
   return EXIT_CODES.OK;
 }
 
+/**
+ * Pre-flight dependency check, run once per `render` invocation (single or
+ * batch) right before the real work starts. `--dry-run` already resolves +
+ * reports these (`reportDryRun`, above) but never *fails* on a missing one —
+ * a real render previously had no equivalent guard at all: it would launch
+ * headless Chrome and capture every frame (the bulk of a render's
+ * wall-clock time) only to fail once the producer's encode stage tried to
+ * spawn a missing `ffmpeg`. Failing fast here, before any of that work
+ * starts, is cheap (a `PATH`/cache scan) and gives a `MISSING_DEPENDENCY`
+ * (exit 3) error immediately instead of `RENDER_FAILED` (exit 1) after a
+ * long wait — matching what `00-COMMANDS.md`'s exit-code table promises.
+ *
+ * This only catches "not resolvable anywhere" (no flag, no env var, no
+ * `PATH`, no project-local `.hyperframes/bin/`, no cache). An *explicit*
+ * but wrong path (`--ffmpeg-path`/`HYPERFRAMES_FFMPEG_PATH` pointing at a
+ * file that doesn't exist) is trusted the same way `ffBinaries` already
+ * trusts it, and surfaces at actual spawn time instead — `handleRuntimeError`
+ * (below) maps that raw `ENOENT` to the same exit code.
+ */
+async function assertRenderDependencies(): Promise<void> {
+  const { findFfBinary } = await import("@hyperframes/parsers/ff-binaries");
+
+  if (!findFfBinary("ffmpeg")) {
+    throw new CliError(
+      "ffmpeg not found.",
+      EXIT_CODES.MISSING_DEPENDENCY,
+      "Install ffmpeg, pass --ffmpeg-path, set HYPERFRAMES_FFMPEG_PATH, or run `hfmpeg doctor` for details.",
+    );
+  }
+  if (!findFfBinary("ffprobe")) {
+    throw new CliError(
+      "ffprobe not found.",
+      EXIT_CODES.MISSING_DEPENDENCY,
+      "Install ffprobe, pass --ffprobe-path, set HYPERFRAMES_FFPROBE_PATH, or run `hfmpeg doctor` for details.",
+    );
+  }
+
+  try {
+    // Undefined is fine here (falls back to Puppeteer's own bundled Chrome,
+    // 00-PLAN.md §2.2 item 6) — this only throws when an *explicit* chromium
+    // path (flag/env) was given but doesn't exist on disk.
+    const { resolveHeadlessShellPath } = await import("@hyperframes/engine");
+    resolveHeadlessShellPath();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new CliError(
+      `Chromium/chrome-headless-shell not found: ${message}`,
+      EXIT_CODES.MISSING_DEPENDENCY,
+      "Run `hfmpeg deps chromium ensure`, pass --chromium-path, or run `hfmpeg doctor` for details.",
+    );
+  }
+}
+
 export async function runRenderCommand(argv: string[], args: RenderArgs): Promise<number> {
   try {
     return await executeRender(args);
@@ -329,7 +383,7 @@ export async function runRenderCommand(argv: string[], args: RenderArgs): Promis
  * pass-throughs: re-read at the actual spawn/resolve call sites (§2.2/§2.4),
  * so setting them for the process is all `render` needs to do.
  */
-function applyPathOverrideEnv(args: RenderArgs): void {
+export function applyPathOverrideEnv(args: RenderArgs): void {
   if (args.ffmpegPath !== undefined) process.env.HYPERFRAMES_FFMPEG_PATH = args.ffmpegPath;
   if (args.ffprobePath !== undefined) process.env.HYPERFRAMES_FFPROBE_PATH = args.ffprobePath;
   if (args.chromiumPath !== undefined) process.env.PRODUCER_HEADLESS_SHELL_PATH = args.chromiumPath;
@@ -365,6 +419,8 @@ async function executeRender(args: RenderArgs): Promise<number> {
   const progressMode = args.quiet ? "none" : resolveProgressMode(progressModeRaw);
 
   const plan = buildRenderPlan(args, args.output);
+  logDebug(`resolved project: dir=${projectDir} entry=${entryFile ?? "index.html"}`);
+  logDebug(`resolved plan: ${JSON.stringify({ format: plan.format, quality: plan.quality, fps: plan.fps, workers: plan.workers, strictness: plan.strictness })}`);
 
   const baseVariables = resolveVariables(args.variables, args.variablesFile);
 
@@ -391,10 +447,19 @@ async function executeRender(args: RenderArgs): Promise<number> {
   // a hand-built EngineConfig literal, so every PRODUCER_*/HYPERFRAMES_* env var
   // stays live and only flags we actually own override it.
   const producerConfig = resolveConfig(plan.engineOverrides);
+  logDebug(
+    `resolved engine config: chromePath=${producerConfig.chromePath ?? "(puppeteer-bundled)"} ` +
+      `lowMemoryMode=${producerConfig.lowMemoryMode} browserGpuMode=${producerConfig.browserGpuMode}`,
+  );
 
   if (args.dryRun) {
     return await reportDryRun(args, plan, producerConfig, projectDir, entryFile);
   }
+
+  // Fail fast on a missing ffmpeg/ffprobe/chromium *before* spending time
+  // capturing frames — see assertRenderDependencies' own comment for why
+  // this didn't exist before and what it does/doesn't catch.
+  await assertRenderDependencies();
 
   if (args.batch) {
     return await executeBatchRender(args, plan, producerConfig, projectDir, entryFile, baseVariables, progressMode, { createRenderJob, executeRenderJob });
@@ -447,6 +512,7 @@ async function executeRender(args: RenderArgs): Promise<number> {
     job.startedAt && job.completedAt
       ? job.completedAt.getTime() - job.startedAt.getTime()
       : undefined;
+  logDebug(`render finished: outcome=${job.outcome ?? "completed"} renderTimeMs=${renderTimeMs ?? "?"}`);
 
   const data = {
     output: outputPath,
@@ -566,8 +632,23 @@ async function executeBatchRender(
   return ok ? EXIT_CODES.OK : EXIT_CODES.RENDER_FAILED;
 }
 
-function handleRuntimeError(err: unknown, json: boolean): number {
+/**
+ * Matches the producer's own "binary not found" wording (confirmed by
+ * actually triggering it: `--ffmpeg-path` pointing at a missing file fails
+ * *before* capture with `"[FFmpeg] FFmpeg binary not found at
+ * HYPERFRAMES_FFMPEG_PATH=\"...\". Install FFmpeg or unset the override."`
+ * — a deliberate, user-facing message, not an internal trace line, and not
+ * a raw `ENOENT` the way a naive spawn failure would be (the producer
+ * pre-validates explicit ffmpeg/ffprobe paths itself and throws this
+ * instead). Still checked alongside a raw `.code === "ENOENT"` as a
+ * fallback for whatever *doesn't* get that same pre-validation.
+ */
+const MISSING_BINARY_MESSAGE_RE = /\bbinary not found\b/i;
+
+export function handleRuntimeError(err: unknown, json: boolean): number {
   const name = err instanceof Error ? err.name : undefined;
+  const message = err instanceof Error ? err.message : undefined;
+  const code = err && typeof err === "object" && "code" in err ? (err as { code?: unknown }).code : undefined;
   let exitCode: ExitCode = EXIT_CODES.RENDER_FAILED;
   if (err instanceof Error && "exitCode" in err) {
     exitCode = (err as CliError).exitCode;
@@ -575,6 +656,13 @@ function handleRuntimeError(err: unknown, json: boolean): number {
     exitCode = EXIT_CODES.CANCELLED;
   } else if (name === "RenderQualityError") {
     exitCode = EXIT_CODES.LINT_OR_STRICT_FAILED;
+  } else if (code === "ENOENT" || (message && MISSING_BINARY_MESSAGE_RE.test(message))) {
+    // Belt-and-suspenders alongside assertRenderDependencies (above): this
+    // catches the one case the upfront check doesn't (it trusts an explicit
+    // --ffmpeg-path/--chromium-path/env var without checking the file
+    // exists, same as the resolvers themselves do) — an explicit-but-wrong
+    // path, surfaced here instead of at fast-fail time.
+    exitCode = EXIT_CODES.MISSING_DEPENDENCY;
   }
 
   const cliError = toCliError(err, exitCode);

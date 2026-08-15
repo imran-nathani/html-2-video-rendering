@@ -1,0 +1,69 @@
+name: CI
+
+# Phase 6 (00-PLAN.md §5): lint, typecheck, unit tests, and a smoke render on
+# each Tier 1 runner — every push/PR, so packaging regressions on a
+# particular OS are caught before a tag ever triggers release.yml.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  typecheck-and-unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - name: Typecheck
+        run: npx tsc -p tsconfig.json --noEmit
+      - name: Unit tests
+        run: npm test
+
+  smoke-render:
+    needs: typecheck-and-unit-tests
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            label: win-x64
+          - os: ubuntu-latest
+            label: linux-x64
+          - os: macos-13
+            label: macos-x64
+          - os: macos-14
+            label: macos-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      # `packaging/build.mjs` (lite channel) already smoke-renders the
+      # packaged archive itself (00-PLAN.md §4/Phase 4) — nothing extra to
+      # invoke here. A missing-ffmpeg render failure on a runner that
+      # genuinely has no ffmpeg on PATH is reported as a warning, not a
+      # build failure; runners that do have ffmpeg preinstalled get a real
+      # end-to-end render as a bonus.
+      - name: Build + smoke-test the lite archive (${{ matrix.label }})
+        run: npm run package:lite
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hfmpeg-lite-${{ matrix.label }}
+          path: |
+            packaging/out/*.zip
+            packaging/out/*.tar.gz
+          if-no-files-found: ignore
+          retention-days: 5

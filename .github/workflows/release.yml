@@ -1,0 +1,114 @@
+name: Release
+
+# Phase 6 (00-PLAN.md §5/§9 D12): tag-driven matrix build across every Tier 1
+# target (win-x64, linux-x64, macos-x64, macos-arm64 — lite + standalone) and
+# Tier 2 (linux-arm64 — lite only, no chrome-headless-shell build exists for
+# it, D5), real-runner smoke render per OS (packaging/build.mjs's own smoke
+# test), SHA256SUMS, and a GitHub Release with the upstream compatibility
+# table and unsigned-binary unblock instructions.
+#
+# Tags are plain `v<semver>` (D12); assets are named
+# `hfmpeg-<version>-<os>-<arch>-<channel>.<ext>`.
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-tier1:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            label: win-x64
+          - os: ubuntu-latest
+            label: linux-x64
+          - os: macos-13
+            label: macos-x64
+          - os: macos-14
+            label: macos-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+
+      - name: Build + smoke-test lite archive
+        run: npm run package:lite
+
+      - name: Build + smoke-test standalone archive
+        run: node packaging/build.mjs --channel standalone --require-pinned
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hfmpeg-${{ matrix.label }}
+          path: |
+            packaging/out/*.zip
+            packaging/out/*.tar.gz
+          retention-days: 14
+
+  build-tier2-linux-arm64:
+    # Free GitHub-hosted arm64 Linux runner (public repos). Lite only —
+    # Chrome for Testing publishes no linux-arm64 chrome-headless-shell
+    # build, so a standalone archive can't be assembled here (00-PLAN.md D5).
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - name: Build + smoke-test lite archive (linux-arm64)
+        run: npm run package:lite
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hfmpeg-linux-arm64
+          path: packaging/out/*.tar.gz
+          retention-days: 14
+
+  publish:
+    needs: [build-tier1, build-tier2-linux-arm64]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Collect archives + checksums
+        run: |
+          mkdir -p release
+          find artifacts -type f \( -name '*.zip' -o -name '*.tar.gz' \) -exec cp {} release/ \;
+          cd release
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Generate release notes
+        run: node packaging/release-notes.mjs > release-notes.md
+
+      - name: Create GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --title "hfmpeg ${{ github.ref_name }}" \
+            --notes-file release-notes.md \
+            release/*

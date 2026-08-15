@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# hfmpeg standalone launcher (00-PLAN.md §2.2/§3/§1 "Zero host deps").
+# Unlike the lite launcher, this bundles its own Node runtime (no `node` on
+# PATH required) and injects the bundled ffmpeg/ffprobe/chromium paths as
+# env overrides — but only when the user hasn't already set one, so
+# `--ffmpeg-path` / `HYPERFRAMES_FFMPEG_PATH` / etc. still win (flag > env >
+# bundled, same precedence as everywhere else — D11/§2.4).
+set -euo pipefail
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+: "${HYPERFRAMES_FFMPEG_PATH:="$DIR/bin/ffmpeg"}"
+: "${HYPERFRAMES_FFPROBE_PATH:="$DIR/bin/ffprobe"}"
+: "${PRODUCER_HEADLESS_SHELL_PATH:="$DIR/bin/chrome-headless-shell/chrome-headless-shell"}"
+export HYPERFRAMES_FFMPEG_PATH HYPERFRAMES_FFPROBE_PATH PRODUCER_HEADLESS_SHELL_PATH
+
+exec "$DIR/bin/node" "$DIR/dist/cli.js" "$@"

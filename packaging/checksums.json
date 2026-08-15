@@ -1,0 +1,6 @@
+{
+  "b6.1.1/win32-x64": {
+    "ffmpeg": "04e1307997530f9cf2fe35cba2ca7e8875ca91da02f89d6c7243df819c94ad00",
+    "ffprobe": "3a7e2dc003dc2cd1472827e4c7c4f056ae1ae0ae7c5bbc580c99b49827351ba4"
+  }
+}

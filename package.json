@@ -1,0 +1,32 @@
+{
+  "name": "hfmpeg",
+  "version": "0.1.0",
+  "description": "ffmpeg-style CLI that renders HyperFrames HTML compositions to mp4/webm/mov/gif/png-sequence",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "hfmpeg": "./dist/cli.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/cli.ts",
+    "start": "node dist/cli.js",
+    "package:lite": "node packaging/build.mjs",
+    "package:standalone": "node packaging/build.mjs --channel standalone",
+    "test": "tsx --test test/**/*.test.ts"
+  },
+  "dependencies": {
+    "@hyperframes/producer": "0.7.103",
+    "@hyperframes/engine": "0.7.103",
+    "@hyperframes/parsers": "0.7.103",
+    "@puppeteer/browsers": "3.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.2"
+  }
+}

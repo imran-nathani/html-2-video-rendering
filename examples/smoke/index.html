@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>hfmpeg smoke test</title>
+    <style>
+      html,
+      body {
+        width: 240px;
+        height: 160px;
+        margin: 0;
+        overflow: hidden;
+        background: #0f172a;
+      }
+      .scene {
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(135deg, #0f172a, #0ea5e9);
+      }
+    </style>
+  </head>
+  <body>
+    <main
+      id="root"
+      data-composition-id="hfmpeg-smoke-test"
+      data-start="0"
+      data-duration="1"
+      data-width="240"
+      data-height="160"
+      data-fps="30"
+      data-no-timeline
+    >
+      <section class="scene clip" data-start="0" data-duration="1"></section>
+    </main>
+    <script>
+      window.__timelines = window.__timelines || {};
+    </script>
+  </body>
+</html>

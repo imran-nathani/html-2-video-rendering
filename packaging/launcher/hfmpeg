@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# hfmpeg lite launcher (00-PLAN.md §3, packaging/launcher/).
+# Resolves the archive root relative to this script (works no matter where
+# the archive is extracted) and execs the bundled Node CLI. Lite archives
+# bundle no ffmpeg/chromium/env overrides — those are injected here only in
+# the standalone launcher (Phase 5).
+set -euo pipefail
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+exec node "$DIR/dist/cli.js" "$@"

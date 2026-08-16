@@ -234,7 +234,7 @@ async function vendorStandaloneBinaries(stageDir) {
   const browserPlatform = toBrowserPlatform(platform, arch);
   if (!browserPlatform) {
     throw new Error(
-      `No chrome-headless-shell build for ${platform}-${arch} — standalone is Tier 1 only (00-PLAN.md D5).`,
+      `No chrome-headless-shell build for ${platform}-${arch} — standalone is only supported on win-x64, linux-x64, macos-x64, and macos-arm64.`,
     );
   }
   const { fetchChromium, copyChromiumLicense } = await import(
@@ -277,9 +277,9 @@ function writeThirdPartyNotice(licensesDir) {
 =====================
 
 This standalone hfmpeg archive bundles two third-party binaries that hfmpeg
-itself only ever invokes as subprocesses (00-PLAN.md §2.5) — hfmpeg's own
-source stays under its own license regardless; these obligations attach only
-to the *bundled binaries*, as "mere aggregation".
+itself only ever invokes as subprocesses — hfmpeg's own source stays under
+its own license regardless; these obligations attach only to the *bundled
+binaries*, as "mere aggregation".
 
 ffmpeg / ffprobe (GPL v3)
 -------------------------
@@ -451,7 +451,7 @@ async function main() {
     if (sizeMb < 200 || sizeMb > 600) {
       log(
         `WARNING: standalone archive is ${sizeMb.toFixed(0)} MB, outside the ~250-400 MB budget ` +
-          `00-PLAN.md §5 expects. Not failing the build, but worth a look.`,
+          `we'd normally expect (dominated by Chromium). Not failing the build, but worth a look.`,
       );
     }
   }

@@ -26,8 +26,8 @@ async function main() {
   const notes = `# hfmpeg v${hfmpegVersion}
 
 An ffmpeg-style CLI that renders HyperFrames HTML compositions to
-mp4/webm/mov/gif/png-sequence. See \`docs/00-COMMANDS.md\` for the full
-command reference.
+mp4/webm/mov/gif/png-sequence. See the repo's README for the full command
+reference.
 
 ## Upstream compatibility
 
@@ -54,9 +54,9 @@ Both are unpack-and-run: extract the archive and invoke \`bin/hfmpeg\`
 
 ## Unsigned binaries
 
-These archives are **not code-signed or notarized** for v1 (00-PLAN.md D8) —
-no certificate, not a security concern with the binary itself. Your OS will
-still flag them on first run:
+These archives are **not code-signed or notarized** for v1 — no certificate,
+not a security concern with the binary itself. Your OS will still flag them
+on first run:
 
 - **macOS**: Gatekeeper blocks it. Run \`xattr -d com.apple.quarantine
   ./bin/hfmpeg\` after extracting, or right-click the binary → *Open* once.
@@ -71,9 +71,9 @@ release) before running either workaround.
 Standalone archives bundle FFmpeg (GPL v3) and Chromium's
 \`chrome-headless-shell\` (BSD-style) as subprocess binaries — see each
 archive's \`THIRD-PARTY-LICENSES/\` directory for license text and
-corresponding-source URLs (00-PLAN.md §2.5). \`hfmpeg\`'s own source stays
-under its own license regardless; only the bundled *binaries* carry these
-obligations ("mere aggregation").
+corresponding-source URLs. \`hfmpeg\`'s own source stays under its own
+license regardless; only the bundled *binaries* carry these obligations
+("mere aggregation").
 `;
 
   process.stdout.write(notes);

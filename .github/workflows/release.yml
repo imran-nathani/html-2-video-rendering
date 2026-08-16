@@ -1,13 +1,14 @@
 name: Release
 
-# Phase 6 (00-PLAN.md §5/§9 D12): tag-driven matrix build across every Tier 1
-# target (win-x64, linux-x64, macos-x64, macos-arm64 — lite + standalone) and
-# Tier 2 (linux-arm64 — lite only, no chrome-headless-shell build exists for
-# it, D5), real-runner smoke render per OS (packaging/build.mjs's own smoke
-# test), SHA256SUMS, and a GitHub Release with the upstream compatibility
-# table and unsigned-binary unblock instructions.
+# Tag-driven matrix build across every Tier 1 target (win-x64, linux-x64,
+# macos-x64, macos-arm64 — lite + editor + standalone) and Tier 2
+# (linux-arm64 — lite only, no chrome-headless-shell build exists for it, so
+# editor/standalone can't be assembled there either), real-runner smoke
+# render per OS (packaging/build.mjs's own smoke test), SHA256SUMS, and a
+# GitHub Release with the upstream compatibility table and unsigned-binary
+# unblock instructions.
 #
-# Tags are plain `v<semver>` (D12); assets are named
+# Tags are plain `v<semver>`; assets are named
 # `hfmpeg-<version>-<os>-<arch>-<channel>.<ext>`.
 
 on:
@@ -43,6 +44,9 @@ jobs:
 
       - name: Build + smoke-test lite archive
         run: npm run package:lite
+
+      - name: Build + smoke-test editor archive
+        run: npm run package:editor
 
       - name: Build + smoke-test standalone archive
         run: node packaging/build.mjs --channel standalone --require-pinned

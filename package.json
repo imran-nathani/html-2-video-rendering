@@ -2,6 +2,7 @@
   "name": "hfmpeg",
   "version": "0.1.0",
   "description": "ffmpeg-style CLI that renders HyperFrames HTML compositions to mp4/webm/mov/gif/png-sequence",
+  "license": "MIT",
   "type": "module",
   "private": true,
   "bin": {
@@ -16,6 +17,7 @@
     "start": "node dist/cli.js",
     "package:lite": "node packaging/build.mjs",
     "package:standalone": "node packaging/build.mjs --channel standalone",
+    "package:editor": "node packaging/build.mjs --channel editor",
     "test": "tsx --test test/**/*.test.ts",
     "typecheck": "tsc -p tsconfig.test.json --noEmit",
     "golden:update": "node packaging/generate-golden.mjs"

@@ -1,9 +1,8 @@
 #!/usr/bin/env node
 /**
- * packaging/build.mjs — Phase 4 & 5 (00-PLAN.md §5/§3): produces either
- * channel's archive for the *host* platform (cross-target matrix building
- * is Phase 6's job — each Tier 1 target is built on its own native CI
- * runner, per §4):
+ * packaging/build.mjs — produces one channel's archive for the *host*
+ * platform (cross-target matrix building happens in CI — each target is
+ * built on its own native runner):
  *
  * - `--channel=lite` (default): a Node-hosted archive containing our
  *   compiled CLI plus a production-only `node_modules` (`@hyperframes/*`,
@@ -11,46 +10,56 @@
  *   launcher shim that execs the *host*'s `node`. Resolves
  *   `ffmpeg`/`ffprobe`/Chromium from `PATH`/env/cache at runtime — no
  *   binaries bundled.
- * - `--channel=standalone`: everything lite has, plus a bundled Node
- *   runtime, `ffmpeg`/`ffprobe`, and the pinned `chrome-headless-shell` —
- *   "zero host deps" (00-PLAN.md §1) — fetched via `fetch-node.mjs`/
- *   `fetch-ffmpeg.mjs`/`fetch-chromium.mjs`, plus a generated
- *   `THIRD-PARTY-LICENSES/` (§2.5: FFmpeg's GPL text + Chromium's BSD text
- *   + the FFmpeg corresponding-source URL — the only two obligations that
- *   survive subprocess-only usage).
+ * - `--channel=editor`: everything lite has, plus a bundled Node runtime
+ *   and the pinned `chrome-headless-shell` — but deliberately **not**
+ *   FFmpeg/FFprobe, which are resolved from the host exactly like lite
+ *   does. For embedding inside a host application that already ships its
+ *   own FFmpeg (e.g. a video editor), where bundling a second copy would
+ *   be pure waste. No GPL content at all — see the README's Licensing
+ *   section.
+ * - `--channel=standalone`: everything editor has, plus FFmpeg/FFprobe too
+ *   — "zero host deps" — fetched via `fetch-node.mjs`/`fetch-ffmpeg.mjs`/
+ *   `fetch-chromium.mjs`, plus a generated `THIRD-PARTY-LICENSES/`
+ *   (FFmpeg's GPL text + Chromium's BSD text + the FFmpeg
+ *   corresponding-source URL — the only two obligations that survive
+ *   subprocess-only usage).
  *
  * Usage:
- *   node packaging/build.mjs [--channel lite|standalone] [--skip-install] [--skip-smoke] [--no-archive] [--skip-vendor]
+ *   node packaging/build.mjs [--channel lite|editor|standalone] [--skip-install] [--skip-smoke] [--no-archive] [--skip-vendor]
  *
  * What it does, in order:
  *   1. `npm run build` (tsc) so `dist/` is fresh.
- *   2. Stage a pruned `package.json` (our own deps only, no devDependencies)
- *      into `packaging/out/<name>/`.
+ *   2. Stage a pruned `package.json` (our own deps only, no devDependencies,
+ *      plus an `hfmpegChannel` marker `meta.ts`'s `getChannel()` reads back
+ *      at runtime) into `packaging/out/<name>/`.
  *   3. `npm install --omit=dev` inside the staged dir — a real install, not
  *      a copy-and-prune of the repo's own `node_modules`, so optional/
  *      platform-specific packages (`esbuild`'s per-platform binary,
  *      Chrome-for-Testing metadata, …) resolve correctly for *this* host.
  *      `PUPPETEER_SKIP_DOWNLOAD=1` stops puppeteer's postinstall from
- *      downloading its own Chromium into the archive (00-PLAN.md §6 risk
- *      table) — lite resolves Chromium externally, standalone fetches its
- *      own pinned copy explicitly (step 4a below).
+ *      downloading its own Chromium into the archive — lite/editor resolve
+ *      Chromium externally, standalone fetches its own pinned copy
+ *      explicitly (step 4a below); editor fetches the same pinned copy too.
  *   4. Verify the producer's on-disk runtime assets survived the install
  *      (`hyperframe.manifest.json`, `hyperframe.runtime.iife.js`, the two
- *      worker JS files, `esbuild`, `puppeteer-core`) — 00-PLAN.md §2.3's
- *      fragile-under-bundling list.
- *   4a. (standalone only) Fetch + stage Node/ffmpeg/ffprobe/chrome-headless-
- *      shell into `bin/`, and write `THIRD-PARTY-LICENSES/`.
- *   5. Copy in the `bin/hfmpeg` / `bin/hfmpeg.cmd` launcher shims.
+ *      worker JS files, `esbuild`, `puppeteer-core`) — these are fragile
+ *      under bundling/pruning.
+ *   4a. (editor/standalone) Fetch + stage Node/chrome-headless-shell (and,
+ *      standalone only, ffmpeg/ffprobe) into `bin/`, and write
+ *      `THIRD-PARTY-LICENSES/`.
+ *   5. Copy in the `bin/hfmpeg` / `bin/hfmpeg.cmd` launcher shims (one
+ *      variant per channel — see `packaging/launcher/`).
  *   6. Compress to `.zip` (win32) or `.tar.gz` (else); for standalone, warn
  *      (not fail) if outside the ~250-400 MB uncompressed size budget
- *      00-PLAN.md §5 expects (dominated by Chromium).
+ *      we'd normally expect (dominated by Chromium).
  *   7. Smoke-test the *staged* archive (not the source tree) by invoking its
  *      launcher for `version`/`doctor`/`probe`/`lint`/`render` against
- *      `examples/smoke`, and (standalone only) asserting `doctor --json`
- *      reports every dependency's `source` as `"bundled"`. A lite `render`
- *      failure whose message names a missing `ffmpeg` is reported as an
- *      environment limitation (this dev box has no ffmpeg on `PATH`), not a
- *      packaging failure — anything else fails the build.
+ *      `examples/smoke`, and (editor/standalone) asserting `doctor --json`
+ *      reports the channel's bundled dependencies' `source` as `"bundled"`
+ *      (Chromium for editor; Chromium + FFmpeg + FFprobe for standalone). A
+ *      lite/editor `render` failure whose message names a missing `ffmpeg`
+ *      is reported as an environment limitation (this dev box has no ffmpeg
+ *      on `PATH`), not a packaging failure — anything else fails the build.
  */
 import { spawnSync } from "node:child_process";
 import {
@@ -82,9 +91,12 @@ function flagValue(name, fallback) {
 }
 
 const channel = flagValue("--channel", "lite");
-if (channel !== "lite" && channel !== "standalone") {
-  throw new Error(`Invalid --channel "${channel}". Expected "lite" or "standalone".`);
+const VALID_CHANNELS = ["lite", "editor", "standalone"];
+if (!VALID_CHANNELS.includes(channel)) {
+  throw new Error(`Invalid --channel "${channel}". Expected one of: ${VALID_CHANNELS.join(", ")}.`);
 }
+const bundlesChromium = channel === "editor" || channel === "standalone";
+const bundlesFfmpeg = channel === "standalone";
 const skipInstall = cliArgs.has("--skip-install");
 const skipSmoke = cliArgs.has("--skip-smoke");
 const noArchive = cliArgs.has("--no-archive");
@@ -169,19 +181,28 @@ function writeStagedPackageJson(stageDir, pkg) {
     bin: { hfmpeg: "./dist/cli.js" },
     engines: pkg.engines,
     dependencies: pkg.dependencies,
+    // Read back by src/meta.ts's getChannel() at runtime — see that
+    // function's own comment for why an explicit marker beats inferring a
+    // three-way channel from which files happen to exist in bin/.
+    hfmpegChannel: channel,
   };
   writeFileSync(join(stageDir, "package.json"), `${JSON.stringify(staged, null, 2)}\n`);
+}
+
+/** launcher/ file basename per channel: "hfmpeg", "hfmpeg-editor", "hfmpeg-standalone". */
+function launcherSuffix() {
+  return channel === "lite" ? "" : `-${channel}`;
 }
 
 function stageLauncher(stageDir) {
   const binDir = join(stageDir, "bin");
   mkdirSync(binDir, { recursive: true });
-  const suffix = channel === "standalone" ? "-standalone" : "";
+  const suffix = launcherSuffix();
   cpSync(join(repoRoot, "packaging", "launcher", `hfmpeg${suffix}`), join(binDir, "hfmpeg"));
   cpSync(join(repoRoot, "packaging", "launcher", `hfmpeg${suffix}.cmd`), join(binDir, "hfmpeg.cmd"));
   // Windows filesystems don't carry a mode; stamp the exec bit explicitly so
   // it survives when this archive is later assembled/extracted on Unix
-  // (00-PLAN.md §4 "Exec bits and symlinks must be written explicitly").
+  // ("Exec bits and symlinks must be written explicitly").
   chmodSync(join(binDir, "hfmpeg"), 0o755);
 }
 
@@ -194,12 +215,13 @@ function toBrowserPlatform(platform, arch) {
 }
 
 /**
- * (standalone only) Fetch Node/ffmpeg/ffprobe/chrome-headless-shell for the
- * host platform and stage them into `bin/`, flattened to fixed names so the
- * launcher doesn't need to know per-platform folder naming. Also copies
- * each binary's LICENSE into `THIRD-PARTY-LICENSES/`.
+ * (editor/standalone) Fetch Node + chrome-headless-shell for the host
+ * platform — and, standalone only, ffmpeg/ffprobe too — and stage them
+ * into `bin/`, flattened to fixed names so the launcher doesn't need to
+ * know per-platform folder naming. Also copies each binary's LICENSE into
+ * `THIRD-PARTY-LICENSES/`.
  */
-async function vendorStandaloneBinaries(stageDir) {
+async function vendorBundledBinaries(stageDir) {
   const platform = process.platform;
   const arch = process.arch;
   const binDir = join(stageDir, "bin");
@@ -215,26 +237,28 @@ async function vendorStandaloneBinaries(stageDir) {
   cpSync(nodeBinary, join(binDir, `node${exeSuffix}`));
   chmodSync(join(binDir, `node${exeSuffix}`), 0o755);
 
-  log("Fetching ffmpeg/ffprobe...");
-  const { fetchFfmpeg } = await import(pathToFileURL(join(__dirname, "fetch-ffmpeg.mjs")).href);
-  const ffmpegDir = join(vendorRoot, "ffmpeg", `${platform}-${arch}`);
-  const { ffmpeg, ffprobe } = await fetchFfmpeg(`${platform}-${arch}`, ffmpegDir, {
-    requirePinned: cliArgs.has("--require-pinned"),
-  });
-  cpSync(ffmpeg, join(binDir, `ffmpeg${exeSuffix}`));
-  cpSync(ffprobe, join(binDir, `ffprobe${exeSuffix}`));
-  chmodSync(join(binDir, `ffmpeg${exeSuffix}`), 0o755);
-  chmodSync(join(binDir, `ffprobe${exeSuffix}`), 0o755);
-  for (const name of ["LICENSE", "SOURCE.txt"]) {
-    const src = join(ffmpegDir, name);
-    if (existsSync(src)) cpSync(src, join(licensesDir, `ffmpeg.${name}`));
+  if (bundlesFfmpeg) {
+    log("Fetching ffmpeg/ffprobe...");
+    const { fetchFfmpeg } = await import(pathToFileURL(join(__dirname, "fetch-ffmpeg.mjs")).href);
+    const ffmpegDir = join(vendorRoot, "ffmpeg", `${platform}-${arch}`);
+    const { ffmpeg, ffprobe } = await fetchFfmpeg(`${platform}-${arch}`, ffmpegDir, {
+      requirePinned: cliArgs.has("--require-pinned"),
+    });
+    cpSync(ffmpeg, join(binDir, `ffmpeg${exeSuffix}`));
+    cpSync(ffprobe, join(binDir, `ffprobe${exeSuffix}`));
+    chmodSync(join(binDir, `ffmpeg${exeSuffix}`), 0o755);
+    chmodSync(join(binDir, `ffprobe${exeSuffix}`), 0o755);
+    for (const name of ["LICENSE", "SOURCE.txt"]) {
+      const src = join(ffmpegDir, name);
+      if (existsSync(src)) cpSync(src, join(licensesDir, `ffmpeg.${name}`));
+    }
   }
 
   log("Fetching chrome-headless-shell...");
   const browserPlatform = toBrowserPlatform(platform, arch);
   if (!browserPlatform) {
     throw new Error(
-      `No chrome-headless-shell build for ${platform}-${arch} — standalone is only supported on win-x64, linux-x64, macos-x64, and macos-arm64.`,
+      `No chrome-headless-shell build for ${platform}-${arch} — ${channel} is only supported on win-x64, linux-x64, macos-x64, and macos-arm64.`,
     );
   }
   const { fetchChromium, copyChromiumLicense } = await import(
@@ -250,37 +274,30 @@ async function vendorStandaloneBinaries(stageDir) {
   copyChromiumLicense(chromiumExecutable, licensesDir);
 
   writeThirdPartyNotice(licensesDir);
-  verifyStandaloneBinaries(stageDir);
+  verifyBundledBinaries(stageDir);
 }
 
-/** Confirms the vendored binaries actually landed where the standalone launcher expects them. */
-function verifyStandaloneBinaries(stageDir) {
+/** Confirms the vendored binaries actually landed where this channel's launcher expects them. */
+function verifyBundledBinaries(stageDir) {
   const exeSuffix = process.platform === "win32" ? ".exe" : "";
   const binDir = join(stageDir, "bin");
   const mustExist = [
     join(binDir, `node${exeSuffix}`),
-    join(binDir, `ffmpeg${exeSuffix}`),
-    join(binDir, `ffprobe${exeSuffix}`),
     join(binDir, "chrome-headless-shell", `chrome-headless-shell${exeSuffix}`),
+    ...(bundlesFfmpeg ? [join(binDir, `ffmpeg${exeSuffix}`), join(binDir, `ffprobe${exeSuffix}`)] : []),
   ];
   const missing = mustExist.filter((p) => !existsSync(p));
   if (missing.length > 0) {
     throw new Error(
-      `Standalone packaging verification failed — missing vendored binary:\n${missing.map((p) => `  - ${p}`).join("\n")}`,
+      `${channel} packaging verification failed — missing vendored binary:\n${missing.map((p) => `  - ${p}`).join("\n")}`,
     );
   }
-  log(`Verified ${mustExist.length} vendored standalone binaries.`);
+  log(`Verified ${mustExist.length} vendored ${channel} binaries.`);
 }
 
 function writeThirdPartyNotice(licensesDir) {
-  const notice = `THIRD-PARTY-LICENSES
-=====================
-
-This standalone hfmpeg archive bundles two third-party binaries that hfmpeg
-itself only ever invokes as subprocesses — hfmpeg's own source stays under
-its own license regardless; these obligations attach only to the *bundled
-binaries*, as "mere aggregation".
-
+  const ffmpegSection = bundlesFfmpeg
+    ? `
 ffmpeg / ffprobe (GPL v3)
 -------------------------
 See ffmpeg.LICENSE and ffmpeg.SOURCE.txt in this directory for the exact
@@ -290,7 +307,22 @@ ffmpeg.SOURCE.txt (Windows: https://www.gyan.dev/ffmpeg/builds/ ; Linux:
 https://johnvansickle.com/ffmpeg/ ; macOS Intel: https://evermeet.cx/pub/ffmpeg/ ;
 macOS Apple Silicon: https://osxexperts.net/), and from
 https://github.com/FFmpeg/FFmpeg for FFmpeg's own upstream source.
+`
+    : "";
+  const intro = bundlesFfmpeg
+    ? `This ${channel} hfmpeg archive bundles third-party binaries that hfmpeg
+itself only ever invokes as subprocesses — hfmpeg's own source stays under
+its own license regardless; the GPL obligations below attach only to the
+*bundled ffmpeg/ffprobe binaries*, as "mere aggregation".`
+    : `This ${channel} hfmpeg archive bundles third-party binaries, none of them
+under a copyleft license — it deliberately does not bundle ffmpeg/ffprobe
+(resolved from the host instead), so there is no GPL "mere aggregation"
+story here at all.`;
+  const notice = `THIRD-PARTY-LICENSES
+=====================
 
+${intro}
+${ffmpegSection}
 chrome-headless-shell (BSD-style, Chromium)
 --------------------------------------------
 See chrome-headless-shell.LICENSE in this directory. Distributed unmodified,
@@ -358,19 +390,24 @@ function smokeTest(stageDir) {
     log(`Smoke test OK: hfmpeg ${check.label}`);
   }
 
-  if (channel === "standalone") {
-    if (doctorJson?.hfmpeg?.channel !== "standalone") {
-      throw new Error(`Smoke test failed: doctor reports channel "${doctorJson?.hfmpeg?.channel}", expected "standalone".`);
+  if (channel === "editor" || channel === "standalone") {
+    if (doctorJson?.hfmpeg?.channel !== channel) {
+      throw new Error(`Smoke test failed: doctor reports channel "${doctorJson?.hfmpeg?.channel}", expected "${channel}".`);
     }
-    const dependencyRows = doctorJson.data.rows.filter((r) => ["ffmpeg", "ffprobe", "chromium"].includes(r.name));
+    // editor bundles Chromium only; standalone bundles ffmpeg/ffprobe too —
+    // see bundlesFfmpeg. Assert "bundled" only for what this channel
+    // actually bundles; the rest just needs to have resolved successfully
+    // from the host, same expectation as lite.
+    const bundledNames = bundlesFfmpeg ? ["ffmpeg", "ffprobe", "chromium"] : ["chromium"];
+    const dependencyRows = doctorJson.data.rows.filter((r) => bundledNames.includes(r.name));
     const notBundled = dependencyRows.filter((r) => r.source !== "bundled");
     if (notBundled.length > 0) {
       throw new Error(
-        `Smoke test failed: expected every dependency's source to be "bundled" in a standalone archive, got:\n` +
+        `Smoke test failed: expected ${bundledNames.join("/")} source to be "bundled" in a ${channel} archive, got:\n` +
           notBundled.map((r) => `  - ${r.name}: ${r.source}`).join("\n"),
       );
     }
-    log("Smoke test OK: doctor reports channel=standalone and every dependency source=bundled");
+    log(`Smoke test OK: doctor reports channel=${channel} and ${bundledNames.join("/")} source=bundled`);
   }
 
   const tmpOut = join(mkdtempSync(join(tmpdir(), "hfmpeg-smoke-")), "out.mp4");
@@ -386,10 +423,11 @@ function smokeTest(stageDir) {
   const renderOutput = `${renderResult.stdout}\n${renderResult.stderr}`;
   if (renderResult.status === 0) {
     log("Smoke test OK: hfmpeg render (produced output)");
-  } else if (channel === "lite" && /ffmpeg/i.test(renderOutput) && /(ENOENT|not found)/i.test(renderOutput)) {
-    // Lite bundles no ffmpeg — this is the *build machine's* environment
-    // limitation, not a packaging defect. Standalone has no such excuse:
-    // it bundles its own ffmpeg, so this branch must not apply to it.
+  } else if (!bundlesFfmpeg && /ffmpeg/i.test(renderOutput) && /(ENOENT|not found)/i.test(renderOutput)) {
+    // Lite/editor bundle no ffmpeg — this is the *build machine's*
+    // environment limitation, not a packaging defect. Standalone has no
+    // such excuse: it bundles its own ffmpeg, so this branch must not
+    // apply to it.
     log(
       "Smoke test render could not complete: no ffmpeg on this build machine's PATH " +
         "(environment limitation, not a packaging defect). Chrome launched and captured " +
@@ -435,9 +473,9 @@ async function main() {
 
   stageLauncher(stageDir);
 
-  if (channel === "standalone" && !skipVendor) {
-    await vendorStandaloneBinaries(stageDir);
-  } else if (channel === "standalone") {
+  if (bundlesChromium && !skipVendor) {
+    await vendorBundledBinaries(stageDir);
+  } else if (bundlesChromium) {
     log("Skipping binary vendoring (--skip-vendor).");
   }
 
@@ -462,7 +500,7 @@ async function main() {
     log(`Wrote ${archivePath} (${archiveSizeMb.toFixed(1)} MB)`);
   }
 
-  if (!skipSmoke && !skipInstall && !(channel === "standalone" && skipVendor)) {
+  if (!skipSmoke && !skipInstall && !(bundlesChromium && skipVendor)) {
     log("Running smoke tests against the staged archive...");
     smokeTest(stageDir);
   } else {

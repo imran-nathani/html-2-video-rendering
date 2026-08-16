@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# hfmpeg editor launcher — like the standalone launcher (bundles its own
+# Node runtime, no `node` on PATH required, and bundles the pinned
+# chrome-headless-shell), but deliberately does NOT bundle or inject an
+# ffmpeg/ffprobe override: this channel is for embedding inside a host
+# application that already ships its own FFmpeg, so FFmpeg/FFprobe resolve
+# from the host exactly like the lite launcher (PATH / HYPERFRAMES_FFMPEG_PATH
+# / --ffmpeg-path, all handled inside the CLI itself — nothing to inject
+# here). `HFMPEG_NO_BUNDLED_BINARIES` skips even the Chromium injection, so
+# this can be forced to resolve everything from PATH too.
+set -euo pipefail
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+if [ -z "${HFMPEG_NO_BUNDLED_BINARIES:-}" ]; then
+  : "${PRODUCER_HEADLESS_SHELL_PATH:="$DIR/bin/chrome-headless-shell/chrome-headless-shell"}"
+  export PRODUCER_HEADLESS_SHELL_PATH
+fi
+
+exec "$DIR/bin/node" "$DIR/dist/cli.js" "$@"

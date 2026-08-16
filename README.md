@@ -15,9 +15,9 @@ output, exit codes, packaging, and releases.
 ## Installing
 
 Download the latest release from the
-[Releases page](../../releases/latest). Two channels are published for each
-platform — see [Lite vs. standalone](#lite-vs-standalone) below for which one
-to pick.
+[Releases page](../../releases/latest). Up to three channels are published
+per platform — see [Which channel do I want?](#which-channel-do-i-want)
+below for which one to pick.
 
 Extract the archive and run the launcher directly — no install step:
 
@@ -32,8 +32,8 @@ Extract the archive and run the launcher directly — no install step:
 ```
 
 Run `hfmpeg doctor` after extracting to confirm what it found (Node, FFmpeg,
-FFprobe, Chromium — and, for a standalone archive, that every dependency's
-`source` is `"bundled"`).
+FFprobe, Chromium — and, for standalone/editor archives, that the bundled
+dependencies' `source` reports `"bundled"`).
 
 ### Unsigned binaries
 
@@ -61,26 +61,26 @@ Requires Node.js `>=22`. `npm run dev` runs the CLI directly from `src/` via
 [`tsx`](https://github.com/privatenumber/tsx), no build step needed — e.g.
 `npm run dev -- render ./my-video -o out.mp4`.
 
-## Lite vs. standalone
+## Which channel do I want?
 
-| | **lite** | **standalone** |
-| --- | --- | --- |
-| Download size | small (~50-60 MB compressed) | large (~250-300 MB compressed) |
-| Requires | a host Node.js `>=22` on `PATH` | nothing — zero host dependencies |
-| FFmpeg / FFprobe | resolved from `PATH`, an explicit flag/env var, or a project-local `.hyperframes/bin/` | bundled inside the archive |
-| Chromium (`chrome-headless-shell`) | resolved from a shared cache (`hfmpeg deps chromium ensure` downloads it) or `PATH`/env var | bundled inside the archive, pinned to a known-good version |
-| `hfmpeg doctor` reports | `source: "path"` / `"env"` / `"system"` for each dependency it found | `source: "bundled"` for every dependency |
-| Good for | machines that already have (or don't mind installing) FFmpeg/Chromium; smaller CI images | air-gapped machines, one-off installs, "just works" out of the box |
+| | **lite** | **editor** | **standalone** |
+| --- | --- | --- | --- |
+| Download size | small (~50-60 MB compressed) | medium | large (~250-300 MB compressed) |
+| Requires | a host Node.js `>=22` on `PATH` | nothing — bundles its own Node runtime | nothing — zero host dependencies |
+| FFmpeg / FFprobe | resolved from `PATH`, an explicit flag/env var, or a project-local `.hyperframes/bin/` | same as lite — resolved from the host, **not bundled** | bundled inside the archive |
+| Chromium (`chrome-headless-shell`) | resolved from a shared cache (`hfmpeg deps chromium ensure` downloads it) or `PATH`/env var | bundled inside the archive, pinned to a known-good version | bundled inside the archive, pinned to a known-good version |
+| `hfmpeg doctor` reports | `source: "path"` / `"env"` / `"system"` for each dependency it found | `source: "bundled"` for Chromium, `"system"`/`"env"` for FFmpeg | `source: "bundled"` for every dependency |
+| Good for | machines that already have (or don't mind installing) FFmpeg/Chromium; smaller CI images | **embedding inside a host application that already ships its own FFmpeg** (e.g. a video editor) — no reason to bundle a second copy | air-gapped machines, one-off installs, "just works" out of the box |
 
-Both channels are extract-and-run archives with the identical `hfmpeg`
+All three channels are extract-and-run archives with the identical `hfmpeg`
 command surface — the only difference is where FFmpeg/FFprobe/Chromium come
-from. Run `hfmpeg doctor` after extracting either one to see exactly what
+from. Run `hfmpeg doctor` after extracting any of them to see exactly what
 was found and where.
 
-If you're on the **lite** channel and don't have FFmpeg/Chromium yet:
+If you're on the **lite** or **editor** channel and don't have FFmpeg/Chromium yet:
 
 ```bash
-hfmpeg deps chromium ensure     # downloads the pinned chrome-headless-shell
+hfmpeg deps chromium ensure     # downloads the pinned chrome-headless-shell (lite only — editor already bundles it)
 # then install ffmpeg yourself (apt/brew/choco/winget/scoop, or a static
 # build), and make sure it's on PATH, or point --ffmpeg-path / the
 # HFMPEG_FFMPEG_PATH env var at it.
@@ -88,6 +88,27 @@ hfmpeg deps chromium ensure     # downloads the pinned chrome-headless-shell
 
 There's currently no `hfmpeg deps ffmpeg ensure` (no auto-download for
 FFmpeg) — see the [FAQ](#faq) for why.
+
+## Licensing
+
+`hfmpeg`'s own source is [MIT](LICENSE). Its runtime npm dependencies
+(`@hyperframes/*`, `@puppeteer/browsers`, and everything transitively pulled
+in) are all permissive too (Apache-2.0, MIT, BSD, ISC) — no copyleft
+dependencies anywhere in the source tree.
+
+The one place licensing actually varies is **what a given release archive
+bundles**:
+
+- **lite**: bundles nothing third-party. Fully permissive.
+- **editor**: bundles Chromium's `chrome-headless-shell` (BSD-style) and a
+  Node runtime (MIT-style). No FFmpeg, so no GPL content at all. Fully
+  permissive.
+- **standalone**: additionally bundles FFmpeg/FFprobe (**GPL v3**). FFmpeg is
+  only ever invoked as a subprocess — never linked — so this doesn't affect
+  `hfmpeg`'s own license, but the *archive* carries FFmpeg's redistribution
+  obligations as "mere aggregation": each standalone archive ships a
+  `THIRD-PARTY-LICENSES/` directory with the GPL license text and a
+  corresponding-source URL for the exact bundled build.
 
 ## Commands
 
@@ -438,10 +459,11 @@ effect).
 
 ```bash
 npm run package:lite         # produces packaging/out/hfmpeg-<version>-<os>-<arch>-lite.<ext>
-npm run package:standalone   # + a bundled Node runtime, ffmpeg/ffprobe, and pinned chrome-headless-shell
+npm run package:editor       # + a bundled Node runtime and pinned chrome-headless-shell (no ffmpeg)
+npm run package:standalone   # + ffmpeg/ffprobe too — zero host deps
 ```
 
-Both build the archive for the *host* platform and then smoke-test the
+All three build the archive for the *host* platform and then smoke-test the
 packaged archive itself (not the source tree) — see
 [`packaging/build.mjs`](packaging/build.mjs). Cross-platform matrix builds
 happen in CI (`.github/workflows/release.yml`), one native runner per

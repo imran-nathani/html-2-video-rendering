@@ -6,8 +6,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 /**
  * The archive/repo root: the directory containing `dist/` (or `src/` under
- * `tsx`), `package.json`, and — for a standalone install only —
- * `bin/node[.exe]`, `bin/ffmpeg[.exe]`, `bin/chrome-headless-shell/`.
+ * `tsx`), `package.json`, and — for standalone/editor installs — `bin/`
+ * with `node[.exe]` and `chrome-headless-shell/` (standalone additionally
+ * has `bin/ffmpeg[.exe]`/`bin/ffprobe[.exe]`; editor deliberately doesn't).
  */
 export function getArchiveRoot(): string {
   return join(__dirname, "..");
@@ -15,17 +16,22 @@ export function getArchiveRoot(): string {
 
 interface MinimalPackageJson {
   version: string;
+  /** Written by `packaging/build.mjs` onto the staged package.json for every channel — see `getChannel()`. */
+  hfmpegChannel?: Channel;
 }
 
-let cachedHfmpegVersion: string | undefined;
+let cachedPkg: MinimalPackageJson | undefined;
+
+function readOwnPackageJson(): MinimalPackageJson {
+  if (cachedPkg) return cachedPkg;
+  const pkgPath = join(__dirname, "..", "package.json");
+  cachedPkg = JSON.parse(readFileSync(pkgPath, "utf8")) as MinimalPackageJson;
+  return cachedPkg;
+}
 
 /** Our own version, read from the sibling package.json (works from src/ via tsx or dist/ post-build). */
 export function getHfmpegVersion(): string {
-  if (cachedHfmpegVersion) return cachedHfmpegVersion;
-  const pkgPath = join(__dirname, "..", "package.json");
-  const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as MinimalPackageJson;
-  cachedHfmpegVersion = pkg.version;
-  return cachedHfmpegVersion;
+  return readOwnPackageJson().version;
 }
 
 let cachedProducerVersion: string | null | undefined;
@@ -50,16 +56,24 @@ export function getProducerVersion(): string | undefined {
   return cachedProducerVersion ?? undefined;
 }
 
-export type Channel = "lite" | "standalone";
+export type Channel = "lite" | "standalone" | "editor";
 
 /**
- * Build channel, detected rather than baked in at compile time: a
- * standalone archive (`packaging/build.mjs --channel=standalone`) carries
- * its own `bin/node[.exe]` next to `dist/`; a lite archive or a repo
- * checkout does not (§4 "Release channel detection"). Self-describing, so
- * there is nothing separate to keep in sync when packaging changes.
+ * Build channel, detected rather than baked in at compile time.
+ * `packaging/build.mjs` writes an explicit `hfmpegChannel` field onto the
+ * staged `package.json` for every channel it produces — reading that back
+ * is unambiguous, unlike inferring a three-way channel from which files
+ * happen to exist in `bin/` (lite bundles nothing, editor bundles Node +
+ * Chromium but not FFmpeg, standalone bundles all three — "does `bin/node`
+ * exist" alone can no longer tell editor and standalone apart).
+ *
+ * Falls back to the old file-presence heuristic when the field is absent —
+ * true for a plain repo checkout (`npm run dev` / `node dist/cli.js` after
+ * `npm run build`), which never gets a staged `package.json` at all.
  */
 export function getChannel(): Channel {
+  const marker = readOwnPackageJson().hfmpegChannel;
+  if (marker) return marker;
   const bundledNode = join(getArchiveRoot(), "bin", process.platform === "win32" ? "node.exe" : "node");
   return existsSync(bundledNode) ? "standalone" : "lite";
 }

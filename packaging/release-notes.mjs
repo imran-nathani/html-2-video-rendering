@@ -19,6 +19,7 @@ async function main() {
   const { getHfmpegVersion, getProducerVersion, PINNED_CHROMIUM_VERSION } = await import(
     pathToFileURL(join(repoRoot, "dist", "meta.js")).href
   );
+  const { PINNED_NODE_VERSION } = await import(pathToFileURL(join(__dirname, "fetch-node.mjs")).href);
 
   const hfmpegVersion = getHfmpegVersion();
   const producerVersion = getProducerVersion() ?? "unknown";
@@ -36,20 +37,25 @@ reference.
 | \`@hyperframes/producer\` (pinned) | ${pkg.dependencies["@hyperframes/producer"]} |
 | \`@hyperframes/producer\` (resolved at build time) | ${producerVersion} |
 | \`chrome-headless-shell\` (pinned) | ${PINNED_CHROMIUM_VERSION} |
-| Node.js (bundled in standalone archives) | see \`packaging/fetch-node.mjs\`'s \`PINNED_NODE_VERSION\` |
+| Node.js (bundled in editor/standalone archives) | v${PINNED_NODE_VERSION} |
 
 ## Which archive do I want?
 
-- **lite** — smaller download; resolves \`ffmpeg\`/\`ffprobe\`/Chromium from
+- **lite** — smallest download; resolves \`ffmpeg\`/\`ffprobe\`/Chromium from
   your \`PATH\` or a shared cache. Requires a host Node.js ${pkg.engines.node}.
   Run \`hfmpeg doctor\` after extracting to check what it found.
-- **standalone** — larger download; bundles its own Node runtime,
+- **editor** — bundles its own Node runtime and the pinned Chromium build,
+  but deliberately **not** \`ffmpeg\`/\`ffprobe\` — those are resolved from the
+  host exactly like lite does. For embedding inside an application that
+  already ships its own FFmpeg, where a second copy would be pure waste. As
+  a side effect it bundles no GPL'd binaries at all.
+- **standalone** — largest download; bundles its own Node runtime,
   \`ffmpeg\`/\`ffprobe\`, and the pinned Chromium build. Zero host
   dependencies. \`hfmpeg doctor\`/\`hfmpeg version --json\` report
   \`"channel": "standalone"\` and every dependency's \`source\` as
   \`"bundled"\`.
 
-Both are unpack-and-run: extract the archive and invoke \`bin/hfmpeg\`
+All three are unpack-and-run: extract the archive and invoke \`bin/hfmpeg\`
 (\`bin\\hfmpeg.cmd\` on Windows).
 
 ## Unsigned binaries
@@ -66,14 +72,19 @@ on first run:
 Verify the archive you downloaded against \`SHA256SUMS\` (attached to this
 release) before running either workaround.
 
-## Third-party licenses (standalone only)
+## Third-party licenses
 
-Standalone archives bundle FFmpeg (GPL v3) and Chromium's
-\`chrome-headless-shell\` (BSD-style) as subprocess binaries — see each
-archive's \`THIRD-PARTY-LICENSES/\` directory for license text and
-corresponding-source URLs. \`hfmpeg\`'s own source stays under its own
-license regardless; only the bundled *binaries* carry these obligations
-("mere aggregation").
+\`hfmpeg\` itself is MIT. Only what a given archive *bundles* varies:
+
+- **lite** bundles no third-party binaries at all.
+- **editor** bundles Chromium's \`chrome-headless-shell\` (BSD-style) and the
+  Node runtime (MIT-style) — no copyleft.
+- **standalone** additionally bundles FFmpeg (GPL v3) as a subprocess binary.
+
+See each archive's \`THIRD-PARTY-LICENSES/\` directory for license text and
+corresponding-source URLs. \`hfmpeg\`'s own source stays under its own license
+regardless; only the bundled *binaries* carry these obligations ("mere
+aggregation").
 `;
 
   process.stdout.write(notes);

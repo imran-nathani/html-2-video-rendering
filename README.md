@@ -465,9 +465,50 @@ npm run package:standalone   # + ffmpeg/ffprobe too — zero host deps
 
 All three build the archive for the *host* platform and then smoke-test the
 packaged archive itself (not the source tree) — see
-[`packaging/build.mjs`](packaging/build.mjs). Cross-platform matrix builds
-happen in CI (`.github/workflows/release.yml`), one native runner per
-platform (`win-x64`, `linux-x64`, `linux-arm64`, `macos-x64`, `macos-arm64`).
+[`packaging/build.mjs`](packaging/build.mjs).
+
+### Publishing a release
+
+`.github/workflows/release.yml` describes the intended tag-driven matrix
+build (one native runner per platform). **It is currently not in use** —
+GitHub Actions is unavailable for this repo — so releases are assembled from
+two places instead:
+
+```bash
+# win-x64 — locally, on a Windows machine
+$env:GITHUB_TOKEN = "<PAT with contents:write>"
+node packaging/publish.mjs --dry-run     # build + checksum + preview notes
+node packaging/publish.mjs               # ...then actually publish
+```
+
+[`packaging/publish.mjs`](packaging/publish.mjs) is the `publish` job from
+`release.yml`, done locally: it builds all three channels, checksums them
+into `SHA256SUMS`, generates the release notes, and creates or updates the
+GitHub Release with every archive attached (replacing same-named assets, and
+verifying each upload against the sha256 GitHub reports back). It talks to
+the REST API with a PAT rather than the `gh` CLI, which isn't installed on
+the Windows box this runs from.
+
+macOS ARM archives come from Semaphore
+([`.semaphore/semaphore.yml`](.semaphore/semaphore.yml)), which runs the same
+`packaging/build.mjs` on an Apple Silicon agent and then invokes
+`publish.mjs --skip-build` against the same release. Both entry points merge
+into whatever is already attached — `SHA256SUMS` and the "platforms attached
+to this release" list in the notes are rebuilt from every asset on the
+release, not just the ones the current run uploaded — so the two machines can
+publish in either order without clobbering each other.
+
+`macos-x64` has no home at the moment: Semaphore Cloud offers Apple Silicon
+machines only, so Intel macOS needs Actions (`macos-13`) or a physical Mac.
+Same for `linux-x64`/`linux-arm64`. The release notes state exactly which
+platforms a given release covers rather than implying full matrix coverage.
+
+Archives built elsewhere can be folded into a release from the Windows box
+too:
+
+```bash
+node packaging/publish.mjs --skip-build --extra-dir .\downloaded-from-semaphore
+```
 
 ## Testing
 
@@ -482,8 +523,13 @@ flag plumbing. `test/integration/` additionally has two tests that need a
 real FFmpeg/Chromium toolchain (a golden-output regression render, and a
 cancel/cleanup check) — both self-skip with a clear reason unless
 `HFMPEG_INTEGRATION_TESTS=1` is set and the toolchain is actually available.
-CI (`.github/workflows/ci.yml`) builds and smoke-renders the packaged lite
-archive on every supported OS for every push/PR.
+
+`.github/workflows/ci.yml` would build and smoke-render the packaged lite
+archive on every supported OS for every push/PR, but Actions is unavailable
+for this repo (see [Publishing a release](#publishing-a-release)). In the
+meantime the macOS pipeline in `.semaphore/semaphore.yml` is the only place
+the integration tests run against a real toolchain, and it's manual/tag-only
+— so run `npm test` locally before pushing.
 
 ## FAQ
 

@@ -18,7 +18,9 @@
     "package:lite": "node packaging/build.mjs",
     "package:standalone": "node packaging/build.mjs --channel standalone",
     "package:editor": "node packaging/build.mjs --channel editor",
-    "test": "tsx --test test/**/*.test.ts",
+    "release:publish": "node packaging/publish.mjs",
+    "release:dry-run": "node packaging/publish.mjs --skip-build --dry-run",
+    "test": "tsx --test \"test/**/*.test.ts\"",
     "typecheck": "tsc -p tsconfig.test.json --noEmit",
     "golden:update": "node packaging/generate-golden.mjs"
   },

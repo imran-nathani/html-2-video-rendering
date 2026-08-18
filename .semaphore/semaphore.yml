@@ -1,0 +1,169 @@
+version: v1.0
+name: hfmpeg macOS release build
+
+# macOS-only companion to the local Windows release process
+# (`packaging/publish.mjs`). GitHub Actions is unavailable for this repo, and
+# win-x64 archives are built and published from a maintainer's Windows box —
+# this pipeline covers the one platform that can't be: macOS.
+#
+# ## Scope, and why it's arm64-only
+#
+# Semaphore Cloud offers exactly one Apple machine type, `a2-standard-4`, and
+# it is Apple Silicon only — there is no Intel macOS option at all
+# (https://docs.semaphore.io/reference/machine-types#macos). So this pipeline
+# produces `macos-arm64` archives and nothing else. `macos-x64` still needs
+# GitHub Actions (`macos-13`) or a physical Intel Mac; it stays unpublished
+# until then, and `publish.mjs` states as much in the release notes rather
+# than implying full matrix coverage.
+#
+# `os_image: macos-xcode16` is deliberate: it ships Node v22.14.0, which
+# satisfies `package.json`'s `engines.node` (">=22"). `macos-xcode26` ships
+# Node v24, which would build and package fine but wouldn't be testing the
+# runtime this project actually pins.
+#
+# ## Cost — read before changing the trigger
+#
+# macOS is $0.09/min (vs $0.0075/min for Ubuntu x64), and the account's free
+# tier is $15/month => ~166 macOS minutes per month, total. A full run of
+# this pipeline is roughly 15-20 min (~$1.35-1.80), so the monthly credit is
+# about 8-10 releases — but only a handful of *accidental* runs would eat it.
+#
+# Therefore: do NOT add a `push`-on-every-branch trigger. Configure this in
+# the Semaphore dashboard (Project Settings > General > "What to build") as
+# either manual-run-only or tag-only (`v*.*.*`), matching what
+# `.github/workflows/release.yml` would have done. Everything below is
+# written to spend as few of those minutes as possible:
+#
+#   - `npm ci` output is cached between runs (`cache store`/`cache restore`).
+#   - Cheap checks (typecheck, unit tests) run first so a trivial failure
+#     doesn't pay for a 250 MB Chromium download.
+#   - `brew install ffmpeg` is deliberately NOT used — it's a multi-minute
+#     (sometimes ~10) source/bottle install, and the standalone channel
+#     already downloads a pinned static darwin-arm64 ffmpeg. The lite build
+#     and the integration tests are pointed at *that* binary instead, so
+#     ffmpeg is fetched once, ~5 seconds, no Homebrew involved.
+#   - Channels are built editor -> standalone -> lite so the pinned Node and
+#     chrome-headless-shell downloads (the two big ones) happen once and are
+#     reused from `packaging/vendor/` by the later builds.
+#
+# ## Chromium is not optional for the lite build
+#
+# `@hyperframes/engine`'s `resolveHeadlessShellPath()` checks
+# `PRODUCER_HEADLESS_SHELL_PATH`, then `HYPERFRAMES_BROWSER_PATH`, then two
+# `~/.cache` locations — and nothing else. It does NOT fall back to a
+# `google-chrome` on `PATH`, so the Chrome preinstalled on this image is
+# useless to it, and a lite build on a fresh agent would fail its own smoke
+# render. Hence the explicit env vars pointing at what the editor/standalone
+# builds already staged. (`hfmpeg deps chromium ensure` would also work, but
+# would download Chromium a second time.)
+#
+# ## Secrets
+#
+# `hfmpeg-github-token` must define `GITHUB_TOKEN` — a GitHub PAT with
+# `contents: write` on this repo. Create it under Semaphore's
+# organization Secrets. It's the same token the local publish uses;
+# `packaging/publish.mjs` merges into whatever is already attached to the
+# release, so this job adding macos-arm64 archives won't clobber the win-x64
+# ones or their SHA256SUMS entries.
+#
+# Drop the `publish` block (and the secret) if you'd rather download the
+# archives from Semaphore's artifact store and upload them from Windows with
+# `node packaging/publish.mjs --skip-build --extra-dir <downloads>`.
+
+agent:
+  machine:
+    type: a2-standard-4
+    os_image: macos-xcode16
+
+global_job_config:
+  prologue:
+    commands:
+      - checkout
+      - node --version
+      - cache restore node-modules-$SEMAPHORE_GIT_BRANCH-$(checksum package-lock.json),node-modules-$SEMAPHORE_GIT_BRANCH,node-modules
+      - npm ci
+      - cache store node-modules-$SEMAPHORE_GIT_BRANCH-$(checksum package-lock.json) node_modules
+
+blocks:
+  # Typecheck/unit tests and the three packaging runs share one job rather
+  # than splitting into a fail-fast "Checks" block: a separate block would
+  # pay for its own `checkout` + `npm ci` prologue (~1 min, ~$0.09) on every
+  # run, while ordering the commands within a single job gives exactly the
+  # same fail-before-downloading-Chromium behaviour for free.
+  - name: "macos-arm64: check, package all three channels"
+    # Semaphore rejects a pipeline that mixes explicit and implicit block
+    # dependencies ("There are blocks with both explicitly and implicitly
+    # defined dependencies"), so this first block declares an empty list
+    # rather than omitting the key.
+    dependencies: []
+    task:
+      env_vars:
+        # Written by fetch-ffmpeg.mjs / build.mjs at these exact paths; used
+        # by the lite build and the integration tests, which bundle nothing
+        # of their own. Relative to the checkout dir, resolved to absolute in
+        # the job below (the engine requires existing absolute paths).
+        - name: VENDOR_FFMPEG_DIR
+          value: packaging/vendor/ffmpeg/darwin-arm64
+      jobs:
+        - name: Typecheck, test, build + smoke-test lite/editor/standalone
+          commands:
+            - npm run typecheck
+            - npm test
+
+            - VERSION=$(node -p "require('./package.json').version")
+            - STAGE=packaging/out/hfmpeg-$VERSION-macos-arm64
+
+            # editor first: downloads the pinned Node runtime and
+            # chrome-headless-shell into packaging/vendor/, which the
+            # standalone build then reuses instead of re-downloading.
+            - npm run package:editor
+
+            # standalone: adds the pinned static ffmpeg/ffprobe.
+            # --require-pinned refuses to bundle an ffmpeg build that has no
+            # sha256 pin in packaging/checksums.json, so CI can never be the
+            # first thing to trust a changed upstream asset. The
+            # b6.1.1/darwin-arm64 pin was minted and committed from a
+            # maintainer's machine for exactly this reason.
+            - node packaging/build.mjs --channel standalone --require-pinned
+
+            # lite bundles nothing, so hand it the binaries the two builds
+            # above already fetched — see the header comment on why this
+            # beats `brew install ffmpeg` and why Chromium can't be skipped.
+            - export PRODUCER_HEADLESS_SHELL_PATH="$PWD/$STAGE-editor/bin/chrome-headless-shell/chrome-headless-shell"
+            - export HYPERFRAMES_FFMPEG_PATH="$PWD/$VENDOR_FFMPEG_DIR/ffmpeg"
+            - export HYPERFRAMES_FFPROBE_PATH="$PWD/$VENDOR_FFMPEG_DIR/ffprobe"
+            - npm run package:lite
+
+            # Now that a real toolchain is present, the integration tests
+            # (golden-output regression render + cancel/cleanup) can actually
+            # run instead of self-skipping — the main thing this macOS agent
+            # buys us beyond the archives themselves.
+            - HFMPEG_INTEGRATION_TESTS=1 npm test
+
+            # Only the three .tar.gz files — NOT all of packaging/out/, which
+            # also holds the uncompressed stage directories (~700 MB) that
+            # were only ever inputs to the archives.
+            - mkdir -p release && cp packaging/out/*.tar.gz release/
+            - ls -lh release
+            - artifact push workflow release --force
+
+  - name: "Publish to the GitHub release"
+    dependencies: ["macos-arm64: check, package all three channels"]
+    # Tag builds only: a manual run against a branch has no release to
+    # attach to, and shouldn't invent one.
+    run:
+      when: "tag =~ '^v.*'"
+    task:
+      secrets:
+        - name: hfmpeg-github-token
+      jobs:
+        - name: Attach macos-arm64 archives to the release
+          commands:
+            - artifact pull workflow release --destination packaging/out --force
+            # publish.mjs's release-notes step reads dist/meta.js.
+            - npm run build
+            # --skip-build: the archives were built (and smoke-tested) in the
+            # previous block; this only checksums, uploads, and merges the
+            # release notes/SHA256SUMS with whatever win-x64 archives are
+            # already attached.
+            - node packaging/publish.mjs --skip-build --tag "$SEMAPHORE_GIT_TAG_NAME"

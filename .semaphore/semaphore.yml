@@ -113,12 +113,14 @@ blocks:
             - VERSION=$(node -p "require('./package.json').version")
             - STAGE=packaging/out/hfmpeg-$VERSION-macos-arm64
 
-            # editor first: downloads the pinned Node runtime and
-            # chrome-headless-shell into packaging/vendor/, which the
-            # standalone build then reuses instead of re-downloading.
-            - npm run package:editor
-
-            # standalone: adds the pinned static ffmpeg/ffprobe.
+            # standalone first: it's the only channel that fetches *all three*
+            # binaries (Node, chrome-headless-shell, ffmpeg/ffprobe) into
+            # packaging/vendor/, so the editor and lite builds after it reuse
+            # that cache instead of re-downloading. It also has to run before
+            # any HYPERFRAMES_FFMPEG_PATH/PRODUCER_HEADLESS_SHELL_PATH is
+            # exported: its smoke test asserts every dependency resolves as
+            # "bundled", which an env override would falsify.
+            #
             # --require-pinned refuses to bundle an ffmpeg build that has no
             # sha256 pin in packaging/checksums.json, so CI can never be the
             # first thing to trust a changed upstream asset. The
@@ -126,26 +128,38 @@ blocks:
             # maintainer's machine for exactly this reason.
             - node packaging/build.mjs --channel standalone --require-pinned
 
-            # lite bundles nothing, so hand it the binaries the two builds
-            # above already fetched — see the header comment on why this
-            # beats `brew install ffmpeg` and why Chromium can't be skipped.
-            - export PRODUCER_HEADLESS_SHELL_PATH="$PWD/$STAGE-editor/bin/chrome-headless-shell/chrome-headless-shell"
+            # Hand the host-resolved ffmpeg to the two channels that don't
+            # bundle one, so their smoke tests perform a real render instead
+            # of reporting "no ffmpeg on this build machine's PATH". Safe for
+            # editor: it only asserts *chromium* is bundled, and deliberately
+            # leaves ffmpeg to the host.
             - export HYPERFRAMES_FFMPEG_PATH="$PWD/$VENDOR_FFMPEG_DIR/ffmpeg"
             - export HYPERFRAMES_FFPROBE_PATH="$PWD/$VENDOR_FFMPEG_DIR/ffprobe"
+            - npm run package:editor
+
+            # lite bundles nothing at all, so it needs the browser pointed out
+            # to it too — see the header comment on why Chromium can't be
+            # skipped here.
+            - export PRODUCER_HEADLESS_SHELL_PATH="$PWD/$STAGE-standalone/bin/chrome-headless-shell/chrome-headless-shell"
             - npm run package:lite
 
-            # Now that a real toolchain is present, the integration tests
-            # (golden-output regression render + cancel/cleanup) can actually
-            # run instead of self-skipping — the main thing this macOS agent
-            # buys us beyond the archives themselves.
-            - HFMPEG_INTEGRATION_TESTS=1 npm test
-
+            # Push the archives BEFORE running anything else. They are the
+            # deliverable and they took real money to produce; a later
+            # command failing must not be able to discard them (the first run
+            # of this pipeline lost three good archives exactly that way).
             # Only the three .tar.gz files — NOT all of packaging/out/, which
             # also holds the uncompressed stage directories (~700 MB) that
             # were only ever inputs to the archives.
             - mkdir -p release && cp packaging/out/*.tar.gz release/
             - ls -lh release
             - artifact push workflow release --force
+
+            # Now that a real toolchain is present, the integration tests
+            # (golden-output regression render + cancel/cleanup) can actually
+            # run instead of self-skipping — the main thing this macOS agent
+            # buys us beyond the archives themselves. Last, because it's the
+            # step most likely to fail for reasons unrelated to packaging.
+            - HFMPEG_INTEGRATION_TESTS=1 npm test
 
   - name: "Publish to the GitHub release"
     dependencies: ["macos-arm64: check, package all three channels"]

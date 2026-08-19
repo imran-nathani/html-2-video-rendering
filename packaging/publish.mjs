@@ -283,6 +283,14 @@ class GitHub {
 
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
       const existing = (await this.listAssets(release.id)).find((a) => a.name === asset.name);
+      // Already attached and byte-identical (GitHub reports each asset's
+      // sha256): re-uploading would just spend minutes to arrive at the same
+      // bytes. Matters when re-running to add one channel to a release that
+      // already has the others.
+      if (existing && asset.sha256 && (existing.digest ?? "").replace(/^sha256:/, "") === asset.sha256) {
+        log(`Skipping ${asset.name} — already attached with a matching sha256.`);
+        return existing;
+      }
       if (existing) {
         log(`Replacing existing asset ${asset.name} (id ${existing.id})`);
         await this.deleteAsset(existing.id);
@@ -299,8 +307,12 @@ class GitHub {
         });
         return uploaded;
       } catch (err) {
-        if (attempt === attempts) throw err;
-        log(`Upload failed (${err.message.split("\n")[0]}); retrying in 5s...`);
+        // `fetch` surfaces transport problems as a bare "fetch failed"; the
+        // actual reason (ECONNRESET, EPIPE, socket timeout, ...) is only in
+        // `cause`, and without it a failed release upload is undebuggable.
+        const cause = err.cause ? ` [cause: ${err.cause.code ?? ""} ${err.cause.message ?? err.cause}]` : "";
+        if (attempt === attempts) throw new Error(`${err.message}${cause}`, { cause: err.cause });
+        log(`Upload failed (${err.message.split("\n")[0]}${cause}); retrying in 5s...`);
         await new Promise((r) => setTimeout(r, 5000));
       }
     }

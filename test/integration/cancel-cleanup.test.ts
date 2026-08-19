@@ -47,7 +47,8 @@ const smokeDir = join(repoRoot, "examples", "smoke");
 const tsxCli = join(repoRoot, "node_modules", "tsx", "dist", "cli.mjs");
 const cliEntry = join(repoRoot, "src", "cli.ts");
 
-const SIGINT_DELAY_MS = 600;
+const RENDER_STARTED_POLL_MS = 25;
+const RENDER_STARTED_TIMEOUT_MS = 15_000;
 const EXIT_TIMEOUT_MS = 20_000;
 const ORPHAN_GRACE_MS = 1500;
 
@@ -70,6 +71,33 @@ function findProcessesReferencing(marker: string): string[] {
     .split("\n")
     .filter((line) => line.includes(marker))
     .map((line) => line.trim());
+}
+
+/**
+ * A fixed post-spawn delay before sending SIGINT is inherently racy: on a
+ * cold CI agent (fresh `tsx` transpilation, no warmed module cache) the gap
+ * between `spawn()` and `commands/render.ts` actually registering its own
+ * `process.once("SIGINT", ...)` handler can exceed any delay chosen here,
+ * so the signal lands on a process with no listener and the OS default
+ * action kills it — exit 130 (128 + SIGINT), not `EXIT_CODES.CANCELLED`.
+ * That's a test-harness race, not a real cancellation bug.
+ *
+ * Instead, poll for a child process whose command line already references
+ * the scratch dir (the same signal `findProcessesReferencing` uses for the
+ * orphan check below). By the time ffmpeg/chrome-headless-shell has been
+ * spawned with `--tmp-dir`'s path in its argv, `executeRender()` has long
+ * since registered its SIGINT handler — that happens before `createRenderJob`
+ * even runs, let alone before anything spawns a child process referencing
+ * the scratch dir. So this ties the signal to genuine render progress
+ * instead of a guessed wall-clock delay.
+ */
+async function waitUntilRenderStarted(scratchDir: string, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (findProcessesReferencing(scratchDir).length > 0) return;
+    await new Promise((r) => setTimeout(r, RENDER_STARTED_POLL_MS));
+  }
+  throw new Error(`No process referencing ${scratchDir} appeared within ${timeoutMs}ms — render never started?`);
 }
 
 test("cancel/cleanup: SIGINT mid-render exits CANCELLED and leaves no orphaned ffmpeg/chrome process", async (t) => {
@@ -112,7 +140,7 @@ test("cancel/cleanup: SIGINT mid-render exits CANCELLED and leaves no orphaned f
       });
     });
 
-    await new Promise((r) => setTimeout(r, SIGINT_DELAY_MS));
+    await waitUntilRenderStarted(scratchDir, RENDER_STARTED_TIMEOUT_MS);
     child.kill("SIGINT");
 
     const exitCode = await exited;

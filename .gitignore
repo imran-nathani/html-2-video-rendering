@@ -5,3 +5,4 @@ dist/
 examples/**/out.*
 packaging/out/
 packaging/vendor/
+packaging/out-macos/

@@ -1,6 +1,6 @@
 import { getChannel, getHfmpegVersion, type Channel } from "../meta.js";
 import { color } from "./color.js";
-import type { CliError } from "./errors.js";
+import type { CliError, CliErrorReason, StructuredFinding, StructuredWarning } from "./errors.js";
 
 interface HfmpegEnvelopeMeta {
   version: string;
@@ -17,7 +17,17 @@ interface DataInput<T> {
 interface FailureInput {
   ok: false;
   command: string;
-  error: { message: string; exitCode: number; hint?: string };
+  error: {
+    message: string;
+    exitCode: number;
+    hint?: string;
+    /** Disambiguates exit codes shared by more than one failure mode (notably 4). */
+    reason?: CliErrorReason;
+    /** Flat code list — the cheap thing to switch on; `warnings` has the rest. */
+    warningCodes?: string[];
+    warnings?: StructuredWarning[];
+    findings?: StructuredFinding[];
+  };
 }
 
 /** Stable `{ ok, command, hfmpeg, data | error }` envelope for every command's `--json` output. */
@@ -27,13 +37,33 @@ export function printJsonEnvelope<T>(input: DataInput<T> | FailureInput): void {
   process.stdout.write(`${JSON.stringify(envelope, null, 2)}\n`);
 }
 
-/** Report a `CliError` either as the JSON envelope or as plain stderr text. */
+/**
+ * Report a `CliError` either as the JSON envelope or as plain stderr text.
+ *
+ * When the error carries structured attribution (`CliError.details`) it is
+ * merged into the `error` object: `reason` for the two distinct failures
+ * that share exit 4, plus the producer's `warnings[]`/`warningCodes[]` or
+ * the lint gate's `findings[]`. Without this, the only machine-readable
+ * copy of a blocking warning code lives in a `[WARN]` line on stderr, so a
+ * host application has to scrape logs (or regex the prose `message`) to
+ * attribute a strict-mode failure — exactly the fragility the rest of the
+ * `--json` contract avoids.
+ */
 export function printCliError(command: string, error: CliError, json: boolean): void {
   if (json) {
+    const warnings = error.details?.warnings;
     printJsonEnvelope({
       ok: false,
       command,
-      error: { message: error.message, exitCode: error.exitCode, hint: error.hint },
+      error: {
+        message: error.message,
+        exitCode: error.exitCode,
+        hint: error.hint,
+        reason: error.details?.reason,
+        warningCodes: warnings?.map((warning) => warning.code),
+        warnings,
+        findings: error.details?.findings,
+      },
     });
     return;
   }

@@ -58,6 +58,8 @@ export interface RenderArgs {
   debug: boolean;
   /** `--progress <auto|bar|plain|json|none>`. */
   progress?: string;
+  /** `--poster <time|auto>`: render one still frame instead of a video. */
+  poster?: string;
   /** `--dry-run`: resolve everything and print the plan without rendering. */
   dryRun: boolean;
 
@@ -123,6 +125,7 @@ const FLAGS_WITH_VALUE: Record<string, RenderArgsStringKey> = {
   "--player-ready-timeout": "playerReadyTimeout",
   "--protocol-timeout": "protocolTimeout",
   "--progress": "progress",
+  "--poster": "poster",
   "--ffmpeg-path": "ffmpegPath",
   "--ffprobe-path": "ffprobePath",
   "--chromium-path": "chromiumPath",

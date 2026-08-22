@@ -1,5 +1,6 @@
-import { existsSync, statSync } from "node:fs";
-import { extname, resolve } from "node:path";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, extname, join, resolve } from "node:path";
 import { resolveResolutionFlagPair } from "@hyperframes/parsers";
 import type { CanvasResolution } from "@hyperframes/parsers";
 import type { EngineConfig } from "@hyperframes/engine";
@@ -7,18 +8,34 @@ import type { BatchRow } from "../batch.js";
 import { readBatchRows, runBatch } from "../batch.js";
 import type { RenderArgs } from "../args/parse.js";
 import { parseFpsArg } from "../args/fps.js";
-import { assertStrictVariables, resolveVariables, type VariablesObject } from "../args/variables.js";
-import { CliError, EXIT_CODES, toCliError, usageError, type ExitCode } from "../output/errors.js";
+import {
+  assertStrictVariables,
+  checkUndeclaredVariables,
+  resolveVariables,
+  type VariablesObject,
+} from "../args/variables.js";
+import {
+  CliError,
+  EXIT_CODES,
+  toCliError,
+  usageError,
+  type CliErrorDetails,
+  type ExitCode,
+  type StructuredWarning,
+} from "../output/errors.js";
 import { printCliError, printJsonEnvelope } from "../output/json.js";
 import {
   createProgressReporter,
   isValidProgressMode,
   resolveProgressMode,
   type ProgressMode,
+  type ProgressReporter,
 } from "../output/progress.js";
+import { parsePosterTime, planPosterCapture } from "../poster.js";
 import { extractCompositionRoot } from "../composition.js";
 import { logDebug } from "../output/log.js";
 import { readEntryHtml, resolveProjectInput } from "../project.js";
+import { createProducerLogger, withConsoleLevelGate } from "../runtime/logger.js";
 import { loadProducer } from "../runtime/producer.js";
 
 type RenderOutputFormat = "mp4" | "webm" | "mov" | "gif" | "png-sequence";
@@ -229,13 +246,21 @@ async function runLintGate(
   }
   const result = await runHyperframeLint(prepared.prepared);
   if (result.errorCount > 0 || (mode === "strict-all" && result.warningCount > 0)) {
-    const findings = result.findings
-      .filter((f) => f.severity === "error" || (mode === "strict-all" && f.severity === "warning"))
-      .map((f) => `[${f.severity}] ${f.code}: ${f.message}`)
-      .join("\n");
+    const blocking = result.findings.filter(
+      (f) => f.severity === "error" || (mode === "strict-all" && f.severity === "warning"),
+    );
     throw new CliError(
-      `Lint gate failed (${result.errorCount} error(s), ${result.warningCount} warning(s)):\n${findings}`,
+      `Lint gate failed (${result.errorCount} error(s), ${result.warningCount} warning(s)):\n` +
+        blocking.map((f) => `[${f.severity}] ${f.code}: ${f.message}`).join("\n"),
       EXIT_CODES.LINT_OR_STRICT_FAILED,
+      undefined,
+      // `reason` separates this from the *other* exit-4 failure (a capture
+      // blocked by correctness warnings under --no-best-effort), which a
+      // caller wants to report to the user completely differently.
+      {
+        reason: "lint_gate",
+        findings: blocking.map((f) => ({ code: f.code, severity: f.severity, message: f.message })),
+      },
     );
   }
 }
@@ -275,14 +300,29 @@ async function reportDryRun(
   const { findFfBinary } = await import("@hyperframes/parsers/ff-binaries");
   const { resolveHeadlessShellPath } = await import("@hyperframes/engine");
 
+  // A poster overrides both the fps and the frame budget (see `poster.ts`),
+  // so reporting the video plan's numbers here would misstate the work by
+  // an order of magnitude — the one question --dry-run exists to answer.
+  const poster =
+    args.poster !== undefined && durationSeconds !== undefined && durationSeconds > 0
+      ? planPosterCapture(durationSeconds, parsePosterTime(args.poster, durationSeconds), plan.fps)
+      : undefined;
+
   const data = {
     projectDir,
     entryFile: entryFile ?? "index.html",
     output: args.batch ? `${outputPath} (batch template)` : outputPath,
-    format: plan.format,
+    format: poster ? "png (poster)" : plan.format,
     quality: plan.quality,
-    fps: plan.fps,
+    fps: poster?.fps ?? plan.fps,
     workers: plan.workers ?? "auto",
+    poster: poster
+      ? {
+          timeSeconds: poster.timeSeconds,
+          frameIndex: poster.frameIndex,
+          capturedFrames: poster.totalFrames,
+        }
+      : undefined,
     composition: {
       id: root?.compositionId,
       width: root?.width,
@@ -306,6 +346,11 @@ async function reportDryRun(
     console.log(`format/quality ${data.format} / ${data.quality}`);
     console.log(`fps            ${data.fps.num}/${data.fps.den}`);
     console.log(`workers        ${data.workers}`);
+    if (data.poster) {
+      console.log(
+        `poster         t=${data.poster.timeSeconds}s  frame ${data.poster.frameIndex} of ${data.poster.capturedFrames} captured`,
+      );
+    }
     console.log(
       `composition    ${data.composition.id ?? "(none found)"}  ${data.composition.width ?? "?"}x${data.composition.height ?? "?"}  duration=${data.composition.durationSeconds ?? "?"}s  frames=${data.composition.totalFrames ?? "?"}`,
     );
@@ -370,6 +415,54 @@ async function assertRenderDependencies(): Promise<void> {
   }
 }
 
+type ExecuteRenderJob = Awaited<ReturnType<typeof loadProducer>>["executeRenderJob"];
+type CreateRenderJob = Awaited<ReturnType<typeof loadProducer>>["createRenderJob"];
+
+/**
+ * Run one job to completion with `SIGINT` wired to its abort signal and
+ * progress forwarded to `reporter`. Shared by the video and `--poster`
+ * paths so cancellation behaves identically in both.
+ */
+async function runRenderJob(
+  executeRenderJob: ExecuteRenderJob,
+  job: Parameters<ExecuteRenderJob>[0],
+  projectDir: string,
+  outputPath: string,
+  reporter: ProgressReporter,
+): Promise<void> {
+  const abortController = new AbortController();
+  const onSigint = () => abortController.abort();
+  process.once("SIGINT", onSigint);
+
+  try {
+    // The gate covers the engine's bare `console.log` tracing, which no
+    // logger injection can reach (see `withConsoleLevelGate`).
+    await withConsoleLevelGate(async () => {
+      await executeRenderJob(
+        job,
+        projectDir,
+        outputPath,
+        // The `RenderJob` handed to the progress callback already carries the
+        // frame counters the producer interpolates into `message`; forward them
+        // as fields so `--progress json` consumers never parse the prose.
+        (
+          progressJob: { progress?: number; totalFrames?: number; framesRendered?: number },
+          message: string,
+        ) => {
+          reporter.report(progressJob.progress ?? 0, message, {
+            totalFrames: progressJob.totalFrames,
+            framesCompleted: progressJob.framesRendered,
+          });
+        },
+        abortController.signal,
+      );
+    });
+  } finally {
+    process.removeListener("SIGINT", onSigint);
+    reporter.end();
+  }
+}
+
 export async function runRenderCommand(argv: string[], args: RenderArgs): Promise<number> {
   try {
     return await executeRender(args);
@@ -418,15 +511,43 @@ async function executeRender(args: RenderArgs): Promise<number> {
   }
   const progressMode = args.quiet ? "none" : resolveProgressMode(progressModeRaw);
 
-  const plan = buildRenderPlan(args, args.output);
+  // `--poster` produces a PNG still, so the video-shaped flags either don't
+  // apply or would silently be ignored. Reject them instead: the format is
+  // forced to a frame capture below, and a caller who passed `--format mov`
+  // expecting an alpha *video* should hear about it.
+  if (args.poster !== undefined) {
+    if (args.batch) throw usageError("--poster cannot be combined with --batch.");
+    if (args.format) {
+      throw usageError(
+        `--poster always writes a PNG; it cannot be combined with --format ${args.format}.`,
+      );
+    }
+    if (args.resolution) {
+      throw usageError(
+        "--poster cannot be combined with --resolution (the alpha/frame capture path does not apply supersampling).",
+      );
+    }
+    if (args.hdr || args.sdr) throw usageError("--poster cannot be combined with --hdr/--sdr.");
+  }
+
+  const plan = buildRenderPlan(
+    args.poster !== undefined ? { ...args, format: "png-sequence" } : args,
+    args.output,
+  );
   logDebug(`resolved project: dir=${projectDir} entry=${entryFile ?? "index.html"}`);
   logDebug(`resolved plan: ${JSON.stringify({ format: plan.format, quality: plan.quality, fps: plan.fps, workers: plan.workers, strictness: plan.strictness })}`);
 
   const baseVariables = resolveVariables(args.variables, args.variablesFile);
 
-  if (args.strictVariables) {
+  // Both variable gates need the entry HTML's declarations, so read it once
+  // when either has something to check. Batch rows are deliberately *not*
+  // checked for undeclared keys: a row key can legitimately exist only to
+  // feed the `{key}` output template (`batch.ts`), so "not declared by the
+  // composition" isn't an error there the way it is for --variables.
+  if (args.strictVariables || baseVariables) {
     const html = readEntryHtml(projectDir, entryFile);
-    assertStrictVariables(html, baseVariables);
+    if (args.strictVariables) assertStrictVariables(html, baseVariables);
+    checkUndeclaredVariables(html, baseVariables, args.strictVariables);
   }
 
   if (args.strict || args.strictAll) {
@@ -461,6 +582,10 @@ async function executeRender(args: RenderArgs): Promise<number> {
   // this didn't exist before and what it does/doesn't catch.
   await assertRenderDependencies();
 
+  if (args.poster !== undefined) {
+    return await executePosterRender(args, plan, producerConfig, projectDir, entryFile, baseVariables, progressMode, { createRenderJob, executeRenderJob });
+  }
+
   if (args.batch) {
     return await executeBatchRender(args, plan, producerConfig, projectDir, entryFile, baseVariables, progressMode, { createRenderJob, executeRenderJob });
   }
@@ -476,6 +601,7 @@ async function executeRender(args: RenderArgs): Promise<number> {
     workers: plan.workers === "auto" ? undefined : plan.workers,
     entryFile,
     producerConfig,
+    logger: createProducerLogger(),
     gifLoop: plan.gifLoop,
     useGpu: plan.useGpu,
     debug: plan.debug,
@@ -489,24 +615,7 @@ async function executeRender(args: RenderArgs): Promise<number> {
     outputResolutionAspectAgnostic: plan.outputResolutionAspectAgnostic,
   });
 
-  const abortController = new AbortController();
-  const onSigint = () => abortController.abort();
-  process.once("SIGINT", onSigint);
-
-  try {
-    await executeRenderJob(
-      job,
-      projectDir,
-      outputPath,
-      (progressJob: { progress?: number }, message: string) => {
-        reporter.report(progressJob.progress ?? 0, message);
-      },
-      abortController.signal,
-    );
-  } finally {
-    process.removeListener("SIGINT", onSigint);
-    reporter.end();
-  }
+  await runRenderJob(executeRenderJob, job, projectDir, outputPath, reporter);
 
   const renderTimeMs =
     job.startedAt && job.completedAt
@@ -535,6 +644,110 @@ async function executeRender(args: RenderArgs): Promise<number> {
   return EXIT_CODES.OK;
 }
 
+/**
+ * `--poster <time|auto>`: one still PNG instead of a video.
+ *
+ * Runs the *real* pipeline (compile, variables, fonts, sub-compositions) at
+ * a frame rate chosen by `planPosterCapture` so one captured frame lands
+ * exactly on the requested time, writes the sequence to a scratch directory,
+ * and keeps the single frame. See `poster.ts` for why it can't simply ask
+ * the producer for one frame.
+ */
+async function executePosterRender(
+  args: RenderArgs,
+  plan: RenderPlan,
+  producerConfig: EngineConfig,
+  projectDir: string,
+  entryFile: string | undefined,
+  variables: VariablesObject | undefined,
+  progressMode: ProgressMode,
+  producerFns: { createRenderJob: CreateRenderJob; executeRenderJob: ExecuteRenderJob },
+): Promise<number> {
+  const root = extractCompositionRoot(readEntryHtml(projectDir, entryFile));
+  const durationSeconds = root?.durationSeconds;
+  if (durationSeconds === undefined || !(durationSeconds > 0)) {
+    throw new CliError(
+      "--poster needs the composition's duration, which could not be read from the entry file.",
+      EXIT_CODES.COMPOSITION_INVALID,
+      "Ensure the composition root carries data-duration (see `hfmpeg probe`).",
+    );
+  }
+
+  const posterPlan = planPosterCapture(durationSeconds, parsePosterTime(args.poster!, durationSeconds), plan.fps);
+  logDebug(
+    `poster plan: t=${posterPlan.timeSeconds}s frame=${posterPlan.frameIndex} ` +
+      `fps=${posterPlan.fps.num}/${posterPlan.fps.den} capturedFrames=${posterPlan.totalFrames}`,
+  );
+
+  const outputPath = resolve(args.output!);
+  checkOutputWritable(outputPath, "png", args.overwrite);
+
+  const framesDir = mkdtempSync(join(tmpdir(), "hfmpeg-poster-"));
+  const reporter = createProgressReporter(progressMode, "render");
+  const job = producerFns.createRenderJob({
+    fps: posterPlan.fps,
+    quality: plan.quality,
+    format: "png-sequence",
+    workers: plan.workers === "auto" ? undefined : plan.workers,
+    entryFile,
+    producerConfig,
+    logger: createProducerLogger(),
+    useGpu: plan.useGpu,
+    debug: plan.debug,
+    strictness: plan.strictness,
+    variables,
+  });
+
+  try {
+    await runRenderJob(producerFns.executeRenderJob, job, projectDir, framesDir, reporter);
+
+    const frames = readdirSync(framesDir)
+      .filter((name) => name.toLowerCase().endsWith(".png"))
+      .sort();
+    const frame = frames[posterPlan.frameIndex];
+    if (!frame) {
+      // Never silently substitute a neighbouring frame: a poster of the
+      // wrong moment is indistinguishable from a correct one downstream.
+      throw new CliError(
+        `Poster frame ${posterPlan.frameIndex} (t=${posterPlan.timeSeconds}s) was not captured; ` +
+          `the render produced ${frames.length} frame(s).`,
+        EXIT_CODES.RENDER_FAILED,
+        "Please report this with the composition's duration and the --poster value used.",
+      );
+    }
+
+    mkdirSync(dirname(outputPath), { recursive: true });
+    copyFileSync(join(framesDir, frame), outputPath);
+
+    const data = {
+      output: outputPath,
+      format: "png",
+      poster: {
+        timeSeconds: posterPlan.timeSeconds,
+        frameIndex: posterPlan.frameIndex,
+        capturedFrames: frames.length,
+        fps: posterPlan.fps,
+      },
+      outcome: job.outcome ?? "completed",
+      warnings: job.warnings ?? [],
+      renderTimeMs:
+        job.startedAt && job.completedAt
+          ? job.completedAt.getTime() - job.startedAt.getTime()
+          : undefined,
+    };
+
+    if (args.json) {
+      printJsonEnvelope({ ok: true, command: "render", data });
+    } else if (!args.quiet) {
+      console.log(`Wrote poster ${outputPath} at t=${posterPlan.timeSeconds}s (${data.outcome})`);
+    }
+
+    return EXIT_CODES.OK;
+  } finally {
+    rmSync(framesDir, { recursive: true, force: true });
+  }
+}
+
 async function executeBatchRender(
   args: RenderArgs,
   plan: RenderPlan,
@@ -543,10 +756,7 @@ async function executeBatchRender(
   entryFile: string | undefined,
   baseVariables: VariablesObject | undefined,
   progressMode: ProgressMode,
-  producerFns: {
-    createRenderJob: Awaited<ReturnType<typeof loadProducer>>["createRenderJob"];
-    executeRenderJob: Awaited<ReturnType<typeof loadProducer>>["executeRenderJob"];
-  },
+  producerFns: { createRenderJob: CreateRenderJob; executeRenderJob: ExecuteRenderJob },
 ): Promise<number> {
   if (!args.output) throw usageError('Missing required "--output, -o <template>" for --batch.');
   const rows = readBatchRows(args.batch as string);
@@ -570,6 +780,7 @@ async function executeBatchRender(
       workers: plan.workers === "auto" ? undefined : plan.workers,
       entryFile,
       producerConfig,
+      logger: createProducerLogger(),
       gifLoop: plan.gifLoop,
       useGpu: plan.useGpu,
       debug: plan.debug,
@@ -583,7 +794,9 @@ async function executeBatchRender(
       outputResolutionAspectAgnostic: plan.outputResolutionAspectAgnostic,
     });
 
-    await executeRenderJob(job, projectDir, outputPath, undefined, undefined);
+    await withConsoleLevelGate(async () => {
+      await executeRenderJob(job, projectDir, outputPath, undefined, undefined);
+    });
 
     return {
       output: outputPath,
@@ -600,7 +813,7 @@ async function executeBatchRender(
     args.output,
     { concurrency, failFast: args.batchFailFast },
     async (row, output, index) => {
-      reporter.report(index / rows.length, `row ${index + 1}/${rows.length}: ${output}`);
+      reporter.report((index / rows.length) * 100, `row ${index + 1}/${rows.length}: ${output}`);
       return renderOne(row, output);
     },
   );
@@ -645,17 +858,54 @@ async function executeBatchRender(
  */
 const MISSING_BINARY_MESSAGE_RE = /\bbinary not found\b/i;
 
+/**
+ * Pull the producer's `RenderWarning[]` off a `RenderQualityError` so the
+ * codes that blocked the render survive into the `--json` error envelope.
+ *
+ * Upstream builds that error with `new RenderQualityError(job.warnings)` and
+ * keeps the array on `.warnings`, but the only *machine-readable* copy it
+ * publishes is a `[WARN] … {"warningCodes":[…]}` line on stderr — the error's
+ * `message` interpolates the codes into prose. Without this, attributing a
+ * strict-mode failure to a code means regexing that message or scraping logs.
+ *
+ * Defensive about the shape (unknown-typed, per-entry `code` check) because
+ * it is an untyped field on a caught error, not something we construct.
+ */
+function extractRenderWarnings(err: unknown): StructuredWarning[] | undefined {
+  if (!err || typeof err !== "object" || !("warnings" in err)) return undefined;
+  const raw = (err as { warnings?: unknown }).warnings;
+  if (!Array.isArray(raw)) return undefined;
+
+  const warnings = raw.flatMap((entry): StructuredWarning[] => {
+    if (!entry || typeof entry !== "object") return [];
+    const { code, message, stage, details } = entry as Record<string, unknown>;
+    if (typeof code !== "string") return [];
+    return [
+      {
+        code,
+        message: typeof message === "string" ? message : undefined,
+        stage: typeof stage === "string" ? stage : undefined,
+        details: details && typeof details === "object" ? (details as Record<string, unknown>) : undefined,
+      },
+    ];
+  });
+
+  return warnings.length > 0 ? warnings : undefined;
+}
+
 export function handleRuntimeError(err: unknown, json: boolean): number {
   const name = err instanceof Error ? err.name : undefined;
   const message = err instanceof Error ? err.message : undefined;
   const code = err && typeof err === "object" && "code" in err ? (err as { code?: unknown }).code : undefined;
   let exitCode: ExitCode = EXIT_CODES.RENDER_FAILED;
+  let details: CliErrorDetails | undefined;
   if (err instanceof Error && "exitCode" in err) {
     exitCode = (err as CliError).exitCode;
   } else if (name === "RenderCancelledError") {
     exitCode = EXIT_CODES.CANCELLED;
   } else if (name === "RenderQualityError") {
     exitCode = EXIT_CODES.LINT_OR_STRICT_FAILED;
+    details = { reason: "correctness_warnings", warnings: extractRenderWarnings(err) };
   } else if (code === "ENOENT" || (message && MISSING_BINARY_MESSAGE_RE.test(message))) {
     // Belt-and-suspenders alongside assertRenderDependencies (above): this
     // catches the one case the upfront check doesn't (it trusts an explicit
@@ -665,7 +915,7 @@ export function handleRuntimeError(err: unknown, json: boolean): number {
     exitCode = EXIT_CODES.MISSING_DEPENDENCY;
   }
 
-  const cliError = toCliError(err, exitCode);
+  const cliError = toCliError(err, exitCode, details);
   printCliError("render", cliError, json);
   return cliError.exitCode;
 }

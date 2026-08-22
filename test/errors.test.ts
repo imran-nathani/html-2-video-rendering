@@ -51,6 +51,63 @@ test("handleRuntimeError: a named RenderQualityError maps to EXIT_CODES.LINT_OR_
   assert.equal(exitCode, EXIT_CODES.LINT_OR_STRICT_FAILED);
 });
 
+test("handleRuntimeError: a RenderQualityError's warnings reach the --json error payload", () => {
+  // The producer throws `new RenderQualityError(job.warnings)` and keeps the
+  // array on `.warnings`; its only other machine-readable copy is a stderr
+  // log line. Without this, attributing a strict-mode failure to a code
+  // means regexing the prose message.
+  const err = Object.assign(new Error("Render blocked by 1 correctness warning: sub_timeline_script_failure"), {
+    name: "RenderQualityError",
+    warnings: [
+      {
+        code: "sub_timeline_script_failure",
+        message: "A sub-composition timeline script failed to load",
+        stage: "capture-readiness",
+        details: { retryable: false },
+      },
+    ],
+  });
+
+  let exitCode: number | undefined;
+  const captured = withCapturedOutput(() => {
+    exitCode = handleRuntimeError(err, true);
+  });
+
+  assert.equal(exitCode, EXIT_CODES.LINT_OR_STRICT_FAILED);
+  const envelope = JSON.parse(captured);
+  assert.equal(envelope.ok, false);
+  assert.equal(envelope.error.reason, "correctness_warnings");
+  assert.deepEqual(envelope.error.warningCodes, ["sub_timeline_script_failure"]);
+  assert.equal(envelope.error.warnings[0].stage, "capture-readiness");
+  assert.deepEqual(envelope.error.warnings[0].details, { retryable: false });
+});
+
+test("handleRuntimeError: an error with no structured detail keeps the envelope's original shape", () => {
+  const captured = withCapturedOutput(() => {
+    handleRuntimeError(new Error("boom"), true);
+  });
+  const envelope = JSON.parse(captured);
+  assert.deepEqual(Object.keys(envelope.error), ["message", "exitCode"]);
+});
+
+test("handleRuntimeError: a lint-gate CliError is attributable without parsing its message", () => {
+  const err = new CliError("Lint gate failed (1 error(s), 0 warning(s)):\n[error] head_leaked_text: …", EXIT_CODES.LINT_OR_STRICT_FAILED, undefined, {
+    reason: "lint_gate",
+    findings: [{ code: "head_leaked_text", severity: "error", message: "…" }],
+  });
+
+  const captured = withCapturedOutput(() => {
+    handleRuntimeError(err, true);
+  });
+
+  const envelope = JSON.parse(captured);
+  // Same exit code as a correctness-warning block, different `reason` — the
+  // whole point of carrying one.
+  assert.equal(envelope.error.exitCode, EXIT_CODES.LINT_OR_STRICT_FAILED);
+  assert.equal(envelope.error.reason, "lint_gate");
+  assert.equal(envelope.error.findings[0].code, "head_leaked_text");
+});
+
 test("handleRuntimeError: a CliError's own exitCode passes through unchanged", () => {
   const err = new CliError("missing ffmpeg", EXIT_CODES.MISSING_DEPENDENCY, "install it");
   let exitCode: number | undefined;

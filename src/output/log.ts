@@ -46,8 +46,26 @@ function effectiveRank(): number {
 }
 
 function write(level: LogLevel, message: string): void {
-  if (LEVEL_RANK[level] > effectiveRank()) return;
+  if (!isLevelEnabled(level)) return;
   process.stderr.write(`${message}\n`);
+}
+
+/**
+ * Would a message at `level` be printed right now? Exported for callers that
+ * format their own lines (`runtime/logger.ts`'s producer adapter) or want to
+ * skip building an expensive message that would be dropped anyway.
+ */
+export function isLevelEnabled(level: LogLevel): boolean {
+  return LEVEL_RANK[level] <= effectiveRank();
+}
+
+/**
+ * Write an already-formatted line at `level`, without the `warn:`/`debug:`
+ * prefixes the helpers below add. Used by the producer logger adapter, which
+ * has to preserve upstream's own `[WARN] message {meta}` line shape.
+ */
+export function logAt(level: LogLevel, message: string): void {
+  write(level, message);
 }
 
 export function logError(message: string): void {

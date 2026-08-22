@@ -133,7 +133,7 @@ Recognised in any position, for every command:
 | Flag | Default | Description |
 | --- | --- | --- |
 | `--verbose` | off | Extra diagnostics on stderr (resolved plan/engine config, timings). Implies `--log-level debug`. |
-| `--log-level <level>` | `info` | `silent`, `error`, `warn`, `info`, `debug`. |
+| `--log-level <level>` | `info` | `silent`, `error`, `warn`, `info`, `debug`. Gates the upstream render pipeline's own logging too, so `silent` really is silent. |
 | `--no-color` | auto | Disable ANSI colour in `doctor`/`deps`/progress/error output (also honours the `NO_COLOR` env var). |
 | `--tmp-dir <path>` | OS temp | Redirects render scratch space here (sets `TMPDIR` on POSIX, `TEMP`+`TMP` on Windows). Created if missing. |
 | `--cache-dir <path>` | `~/.cache/hyperframes/chrome` | Default cache location for `hfmpeg deps chromium ensure\|clear` (its own `--cache-dir` still wins if both are given). |
@@ -172,7 +172,28 @@ hfmpeg render ./my-video --variables '{"title":"Q4 Report"}' -o q4.mp4
 
 # One output per row of a JSON array
 hfmpeg render ./my-video --batch rows.json -o "renders/{name}.mp4" --json
+
+# A single still frame (timeline thumbnail), without a full capture pass
+hfmpeg render ./my-video --poster auto -o thumb.png
 ```
+
+**Posters (`--poster <time|auto>`).** Writes one PNG (alpha preserved)
+instead of a video. `auto` picks mid-duration, because a naive frame 0 is
+often blank — an entrance animation hasn't started, so the first frame of a
+lower third is fully transparent.
+
+It runs the same pipeline a real render does — same compile step, variables,
+fonts, sub-compositions — but at a frame rate chosen so that one of the few
+frames it captures lands *exactly* on the requested time. A mid-duration
+poster of a 4.8 s composition captures 2 frames instead of 144. Cost scales
+with `duration / time`, never more than the full render would have cost.
+`--dry-run` reports the chosen time, frame index, and frame count before
+committing to it.
+
+`--poster` is mutually exclusive with `--batch`, `--format`, `--resolution`,
+and `--hdr`/`--sdr`. There is no `--from`/`--to` range render: the producer
+exposes no frame-range API, so a range would have to capture everything and
+trim afterwards — which your own FFmpeg can do from the finished file.
 
 **Input & output**
 
@@ -214,8 +235,15 @@ to change them.
 | Flag | Default | Description |
 | --- | --- | --- |
 | `--variables <json>` | — | JSON object merged over the composition's `data-composition-variables` defaults. Wins over `--variables-file` when both are given. |
-| `--variables-file <path>` | — | Read those overrides from a JSON file (single object). |
-| `--strict-variables` | off | Fail instead of silently falling back when a declared variable has no value. |
+| `--variables-file <path>` | — | Read those overrides from a JSON file (single object). A UTF-8 BOM is tolerated. |
+| `--strict-variables` | off | Fail instead of silently falling back when a declared variable has no value — and fail on the mirror-image case too (see below). |
+
+A key the composition never declares is ignored by the runtime, so a typo
+(`titel` for `title`) would otherwise change nothing and report nothing.
+`hfmpeg` warns about provided-but-undeclared keys on every render, and
+`--strict-variables` turns that warning into a usage error. Batch rows are
+exempt: a row key can legitimately exist only to feed the `{key}` output
+template.
 | `--batch <path>` | — | A JSON array of row objects, or `{ "rows": [...] }`. One render per row. |
 | `--batch-concurrency <n>` | `1` | Rows rendered at once. |
 | `--batch-fail-fast` | off | Stop launching new rows after the first failure (in-flight rows still finish). |
@@ -252,6 +280,7 @@ from each row.
 | `--strict-all` | off | Same, but warnings fail the gate too. |
 | `--debug` | off | Keep intermediates and write extra render diagnostics. |
 | `--progress <mode>` | `auto` | `auto` (bar on a TTY, plain lines otherwise), `bar`, `plain`, `json` (one NDJSON line per event, on stderr), `none`. |
+| `--poster <time\|auto>` | — | Write a single PNG still at that time instead of a video. `auto` is mid-duration. |
 | `--dry-run` | off | Resolve paths/binaries/config/duration/frame count and print the plan — no Chrome, no FFmpeg. |
 | `--ffmpeg-path <path>` | resolved | Explicit FFmpeg binary for this render. Sets `HYPERFRAMES_FFMPEG_PATH`. |
 | `--ffprobe-path <path>` | resolved | Explicit FFprobe binary. Sets `HYPERFRAMES_FFPROBE_PATH`. |
@@ -323,17 +352,30 @@ hfmpeg lint ./my-video
 hfmpeg lint ./my-video --verbose   # include info-level findings
 hfmpeg lint ./my-video --json
 hfmpeg lint ./my-video --strict    # warnings fail too
+hfmpeg lint ./my-video --hermetic  # remote references fail the run
 ```
 
 | Flag | Description |
 | --- | --- |
 | `--composition, -c <file>` | Lint a specific entry file. |
 | `--strict` | Exit non-zero on warnings as well as errors. |
+| `--hermetic` | Escalate remote-reference findings from `info` to `error`. |
 | `--verbose` | Include info-level findings (hidden by default). |
 | `--json` | `{ errorCount, warningCount, infoCount, findings[] }`. |
 
 `render --strict`/`--strict-all` run this same gate automatically before
 capturing any frames.
+
+**Remote references (`remote_reference`).** On top of the upstream rules,
+`lint` reports every network reference it can see statically — remote
+`<script src>`, Google Fonts and other remote stylesheets, remote
+`@font-face`/`url()` in the entry HTML or a stylesheet it links, remote
+`<img>`/`<video>`/`srcset`/`poster`. These are `info`-level (visible with
+`--verbose`), because a remote reference isn't wrong — but the producer
+fetches them on *every* render with no disk cache, so a pack that has any
+cannot render offline and isn't byte-reproducible. `--hermetic` makes them
+errors, which is the one-command check for a vendored-only policy. The scan
+is entirely static: no HEAD requests, no DNS, so it works offline itself.
 
 ### `doctor`
 
@@ -344,8 +386,10 @@ hfmpeg doctor --json
 
 Reports: `hfmpeg` version and build channel, the Node runtime in use,
 the resolved `@hyperframes/producer` version, FFmpeg/FFprobe/Chromium (path
-and where each was resolved from — `bundled`, `env`, or `system`), free/total
-memory (and whether low-memory mode would auto-engage), and CPU core count.
+and where each was resolved from — `bundled`, `env`, or `system`), the
+resolved font-cache directory (`HYPERFRAMES_FONT_CACHE_DIR` or its default),
+free/total memory (and whether low-memory mode would auto-engage), and CPU
+core count.
 
 `doctor` always exits `0` when the command itself ran — environment health
 lives in the JSON payload's top-level `ok` field, so scripts should gate on
@@ -437,6 +481,7 @@ effect).
 | `PRODUCER_HEADLESS_SHELL_PATH`, `HYPERFRAMES_BROWSER_PATH` | Upstream Chromium overrides. |
 | `HYPERFRAMES_EXTRACT_CACHE_DIR` | Extracted-source-frame cache location (same thing `--frames-cache-dir` sets). Accepts `off`/`none`/`false`/`0` to disable. |
 | `HYPERFRAMES_EXTRACT_CACHE_MAX_MB` | Soft LRU budget for that cache, in MB. |
+| `HYPERFRAMES_FONT_CACHE_DIR` | Where fetched Google Fonts faces are cached (default `~/.cache/hyperframes/fonts`). Embedding hosts will want this inside app-managed storage; `doctor` prints the resolved location. |
 | `PRODUCER_LOW_MEMORY_MODE` | Tri-state: `true`/`on`/`1`, `false`/`off`/`0`, or unset for auto-detect from total RAM. |
 | `PRODUCER_VP9_CPU_USED`, `PRODUCER_EXPERIMENTAL_FAST_CAPTURE`, `HF_PAGE_SIDE_COMPOSITING`, `PRODUCER_BROWSER_GPU_MODE` | Engine tuning knobs; each has a `--flag` equivalent on `render` that wins. |
 | `PRODUCER_PAGE_NAVIGATION_TIMEOUT_MS`, `PRODUCER_PLAYER_READY_TIMEOUT_MS`, `PRODUCER_PUPPETEER_PROTOCOL_TIMEOUT_MS` | Fallbacks for `--browser-timeout`, `--player-ready-timeout`, `--protocol-timeout` (all in ms, even where the flag itself takes seconds). |
@@ -559,14 +604,42 @@ code against the [Exit codes](#exit-codes) table above. `--progress json`
 additionally emits one NDJSON progress line per event on stderr during a
 render, so stdout stays reserved for the final envelope.
 
+Nothing that matters is prose-only. A failure envelope carries structured
+attribution alongside the human `message`, so exit `4` — which covers both
+a lint gate and a capture blocked by correctness warnings — is always
+attributable without a regex:
+
+```json
+{"ok": false, "command": "render",
+ "error": {"message": "Render blocked by 1 correctness warning: sub_timeline_script_failure",
+           "exitCode": 4,
+           "reason": "correctness_warnings",
+           "warningCodes": ["sub_timeline_script_failure"],
+           "warnings": [{"code": "sub_timeline_script_failure", "stage": "capture-readiness", "…": "…"}]}}
+```
+
+`reason` is `correctness_warnings` or `lint_gate` (the latter carries
+`findings[]` instead). Fields are omitted, never null, when they don't
+apply. Progress events likewise carry `totalFrames`/`framesCompleted` as
+fields once a render reaches capture, rather than only inside the human
+`stage` string; `progress` is a percentage (`0`–`100`).
+
 **How do I cancel a running render?**
 Ctrl-C (`SIGINT`). `hfmpeg` finishes cancelling cleanly and exits with code
 `6`.
 
 **Does hfmpeg send my composition or render anywhere?**
 No. Everything runs locally — a local headless Chrome captures the frames,
-a local FFmpeg encodes them. There's no telemetry, no network calls at
-render time, and no update checks.
+a local FFmpeg encodes them. There's no telemetry and no update checks.
+
+The one exception is your *own* composition's remote references: the
+upstream compiler resolves remote `<script src>` (the CDN-GSAP idiom) with a
+live fetch on every render, and fetches Google Fonts families the first time
+it sees them (those *are* cached, under `HYPERFRAMES_FONT_CACHE_DIR`;
+scripts are not). Nothing about the composition is uploaded — these are
+plain GETs for assets it names — but a pack with remote references will not
+render on an offline or restricted network. Run `hfmpeg lint --hermetic` to
+find them, and vendor them into the pack.
 
 **What versions of FFmpeg/Chromium does this target?**
 Chromium (`chrome-headless-shell`) is pinned per `hfmpeg` release — run

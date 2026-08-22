@@ -1,4 +1,6 @@
+import { existsSync } from "node:fs";
 import os from "node:os";
+import { join } from "node:path";
 import { getArchiveRoot, getChannel, getHfmpegVersion, getProducerVersion } from "../meta.js";
 import { color } from "../output/color.js";
 import { EXIT_CODES } from "../output/errors.js";
@@ -83,6 +85,29 @@ export async function getDependencyRows(): Promise<DoctorRow[]> {
 }
 
 /**
+ * Where the producer caches Google Fonts faces at compile time, mirroring
+ * its own resolution order (`fontCacheDir`): `HYPERFRAMES_FONT_CACHE_DIR`
+ * first, then a Lambda-aware default under the OS temp dir, then
+ * `~/.cache/hyperframes/fonts`.
+ *
+ * Reported by `doctor` for the same reason ffmpeg/chromium are: an
+ * embedding host wants to redirect this cache into app-managed storage, and
+ * "which directory did it actually pick" is otherwise unanswerable without
+ * reading the producer bundle. Duplicating the (small, stable) resolution
+ * here rather than importing it keeps `doctor` free of the multi-second
+ * cold import of `@hyperframes/producer` — the whole reason
+ * `runtime/producer.ts` exists.
+ */
+export function resolveFontCacheDir(): { path: string; fromEnv: boolean } {
+  const fromEnv = process.env.HYPERFRAMES_FONT_CACHE_DIR;
+  if (fromEnv) return { path: fromEnv, fromEnv: true };
+  const root = process.env.AWS_LAMBDA_FUNCTION_NAME
+    ? join(os.tmpdir(), "hyperframes", "fonts")
+    : join(os.homedir(), ".cache", "hyperframes", "fonts");
+  return { path: root, fromEnv: false };
+}
+
+/**
  * `doctor` always exits `0` when the command itself ran; environment health
  * lives in the JSON payload's top-level `ok` field (00-COMMANDS.md "doctor").
  */
@@ -104,6 +129,16 @@ export async function runDoctorCommand(json: boolean): Promise<number> {
   });
 
   rows.push(...(await getDependencyRows()));
+
+  const fontCache = resolveFontCacheDir();
+  rows.push({
+    name: "font cache",
+    // Not a health signal: the directory is created on first fetch, so a
+    // missing one just means no font has been cached yet.
+    ok: true,
+    detail: `${fontCache.path}${existsSync(fontCache.path) ? "" : " (not created yet)"}`,
+    source: fontCache.fromEnv ? "env" : "system",
+  });
 
   const totalMemMb = Math.round(os.totalmem() / 1024 / 1024);
   const freeMemMb = Math.round(os.freemem() / 1024 / 1024);

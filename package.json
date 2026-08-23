@@ -1,6 +1,6 @@
 {
   "name": "hfmpeg",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "ffmpeg-style CLI that renders HyperFrames HTML compositions to mp4/webm/mov/gif/png-sequence",
   "license": "MIT",
   "type": "module",

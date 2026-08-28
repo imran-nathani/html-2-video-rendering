@@ -142,6 +142,11 @@ Recognised in any position, for every command:
 per-command rather than globally — `render` reserves `-q` for `--quality`, so
 `--quiet` has no short form there.
 
+`--json` alone (no explicit `--log-level`) defaults `--log-level` to
+`silent`, so `--json`'s whole promise — one parseable document on stdout —
+holds without also having to remember to silence diagnostics yourself. Pass
+an explicit `--log-level` (any value, including `info`) if you want both.
+
 ---
 
 ### `render`
@@ -669,6 +674,13 @@ attributable without a regex:
 apply. Progress events likewise carry `totalFrames`/`framesCompleted` as
 fields once a render reaches capture, rather than only inside the human
 `stage` string; `progress` is a percentage (`0`–`100`).
+
+A warning `hfmpeg` recognises also carries its own `fixHint` (in addition to
+the top-level `error.hint`) — e.g. `sub_timeline_readiness_timeout` (a
+composition that never registers a timeline and never opts out with
+`data-no-timeline`, so the ~45s wait always times out) names
+`data-no-timeline` and `--player-ready-timeout` as the fix, rather than only
+the bare "did not become ready" message the render pipeline itself reports.
 
 **How do I cancel a running render?**
 Ctrl-C (`SIGINT`). `hfmpeg` finishes cancelling cleanly and exits with code

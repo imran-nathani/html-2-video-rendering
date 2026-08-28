@@ -33,6 +33,8 @@ export interface StructuredWarning {
   message?: string;
   stage?: string;
   details?: Record<string, unknown>;
+  /** hfmpeg-authored remediation for warning codes it recognises (`render.ts`'s `WARNING_FIX_HINTS`). */
+  fixHint?: string;
 }
 
 /** A lint finding, as carried in the `--json` error payload. */
@@ -80,8 +82,9 @@ export function toCliError(
   err: unknown,
   fallbackExitCode: ExitCode = EXIT_CODES.USAGE,
   details?: CliErrorDetails,
+  hint?: string,
 ): CliError {
   if (err instanceof CliError) return err;
   const message = err instanceof Error ? err.message : String(err);
-  return new CliError(message, fallbackExitCode, undefined, details);
+  return new CliError(message, fallbackExitCode, hint, details);
 }

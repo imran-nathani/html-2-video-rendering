@@ -80,6 +80,31 @@ test("extractGlobalFlags: rejects an invalid --log-level", () => {
   assert.throws(() => extractGlobalFlags(["--log-level", "verbose"]));
 });
 
+test("extractGlobalFlags: --json without an explicit --log-level defaults to silent", () => {
+  // Q1 (`03-FEATURE-LIST.md`): `--json` promises parseable stdout, but
+  // without this, `@hyperframes/engine`'s bare console.log tracing lands on
+  // stdout ahead of the JSON envelope and breaks JSON.parse outright.
+  const { flags } = extractGlobalFlags(["render", "./dir", "-o", "out.mp4", "--json"]);
+  assert.equal(flags.logLevel, "silent");
+});
+
+test("extractGlobalFlags: an explicit --log-level wins over --json's silent default", () => {
+  const { flags } = extractGlobalFlags(["render", "./dir", "-o", "out.mp4", "--json", "--log-level", "debug"]);
+  assert.equal(flags.logLevel, "debug");
+});
+
+test("extractGlobalFlags: an explicit --log-level info also wins over --json's silent default", () => {
+  // "explicit" must mean "the flag was passed", not "the value differs from
+  // the default" — a caller who explicitly asks for info should get it.
+  const { flags } = extractGlobalFlags(["--log-level", "info", "render", "./dir", "-o", "out.mp4", "--json"]);
+  assert.equal(flags.logLevel, "info");
+});
+
+test("extractGlobalFlags: without --json, the log level default is unaffected", () => {
+  const { flags } = extractGlobalFlags(["render", "./dir", "-o", "out.mp4"]);
+  assert.equal(flags.logLevel, "info");
+});
+
 test("extractGlobalFlags: rejects a value-flag with a missing value", () => {
   assert.throws(() => extractGlobalFlags(["--tmp-dir"]));
   assert.throws(() => extractGlobalFlags(["--cache-dir"]));

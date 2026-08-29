@@ -91,24 +91,20 @@ FFmpeg) — see the [FAQ](#faq) for why.
 
 ## Licensing
 
-`hfmpeg`'s own source is [MIT](LICENSE). Its runtime npm dependencies
-(`@hyperframes/*`, `@puppeteer/browsers`, and everything transitively pulled
-in) are all permissive too (Apache-2.0, MIT, BSD, ISC) — no copyleft
-dependencies anywhere in the source tree.
+`hfmpeg` is dual-licensed under:
 
-The one place licensing actually varies is **what a given release archive
-bundles**:
+1. **GNU Affero General Public License v3.0 (AGPLv3)** — for open-source, personal, evaluation, or non-commercial use.
+2. **Commercial License** — for commercial use, SaaS applications, proprietary integration, closed-source distribution, or organizations unable to comply with AGPLv3 copyleft terms.
 
-- **lite**: bundles nothing third-party. Fully permissive.
-- **editor**: bundles Chromium's `chrome-headless-shell` (BSD-style) and a
-  Node runtime (MIT-style). No FFmpeg, so no GPL content at all. Fully
-  permissive.
-- **standalone**: additionally bundles FFmpeg/FFprobe (**GPL v3**). FFmpeg is
-  only ever invoked as a subprocess — never linked — so this doesn't affect
-  `hfmpeg`'s own license, but the *archive* carries FFmpeg's redistribution
-  obligations as "mere aggregation": each standalone archive ships a
-  `THIRD-PARTY-LICENSES/` directory with the GPL license text and a
-  corresponding-source URL for the exact bundled build.
+See the [LICENSE](LICENSE) file for complete details and commercial licensing contact information.
+
+Its runtime npm dependencies (`@hyperframes/*`, `@puppeteer/browsers`, and everything transitively pulled in) are all permissive (Apache-2.0, MIT, BSD, ISC).
+
+What a given release archive **bundles**:
+
+- **lite**: bundles no third-party binaries.
+- **editor**: bundles Chromium's `chrome-headless-shell` (BSD-style) and a Node runtime (MIT-style).
+- **standalone**: additionally bundles FFmpeg/FFprobe (**GPL v3**). FFmpeg is invoked as an isolated subprocess ("mere aggregation"); each standalone archive ships a `THIRD-PARTY-LICENSES/` directory with notice texts.
 
 ## Commands
 

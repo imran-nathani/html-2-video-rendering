@@ -74,15 +74,15 @@ release) before running either workaround.
 
 ## Third-party licenses
 
-\`hfmpeg\` itself is MIT. Only what a given archive *bundles* varies:
+\`hfmpeg\` itself is dual-licensed (AGPLv3 + Commercial License). Only what a given archive *bundles* varies:
 
 - **lite** bundles no third-party binaries at all.
 - **editor** bundles Chromium's \`chrome-headless-shell\` (BSD-style) and the
-  Node runtime (MIT-style) — no copyleft.
+  Node runtime (MIT-style).
 - **standalone** additionally bundles FFmpeg (GPL v3) as a subprocess binary.
 
 See each archive's \`THIRD-PARTY-LICENSES/\` directory for license text and
-corresponding-source URLs. \`hfmpeg\`'s own source stays under its own license
+corresponding-source URLs. \`hfmpeg\`'s own source stays under its dual license
 regardless; only the bundled *binaries* carry these obligations ("mere
 aggregation").
 `;

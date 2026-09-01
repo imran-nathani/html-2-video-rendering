@@ -32,7 +32,7 @@ import {
   type ProgressReporter,
 } from "../output/progress.js";
 import { parsePosterTime, planPosterCapture } from "../poster.js";
-import { extractCompositionRoot } from "../composition.js";
+import { extractCompositionRoot, resolveFallbackDurationSeconds } from "../composition.js";
 import { logDebug } from "../output/log.js";
 import { readEntryHtml, resolveProjectInput } from "../project.js";
 import { createProducerLogger, withConsoleLevelGate } from "../runtime/logger.js";
@@ -289,9 +289,10 @@ async function reportDryRun(
   entryFile: string | undefined,
 ): Promise<number> {
   const outputPath = args.batch ? args.output! : resolve(args.output!);
-  const root = extractCompositionRoot(readEntryHtml(projectDir, entryFile));
+  const dryRunHtml = readEntryHtml(projectDir, entryFile);
+  const root = extractCompositionRoot(dryRunHtml);
 
-  const durationSeconds = root?.durationSeconds;
+  const durationSeconds = root?.durationSeconds ?? resolveFallbackDurationSeconds(dryRunHtml);
   const totalFrames =
     durationSeconds !== undefined
       ? Math.round((durationSeconds * plan.fps.num) / plan.fps.den)
@@ -663,13 +664,20 @@ async function executePosterRender(
   progressMode: ProgressMode,
   producerFns: { createRenderJob: CreateRenderJob; executeRenderJob: ExecuteRenderJob },
 ): Promise<number> {
-  const root = extractCompositionRoot(readEntryHtml(projectDir, entryFile));
-  const durationSeconds = root?.durationSeconds;
+  const posterHtml = readEntryHtml(projectDir, entryFile);
+  const root = extractCompositionRoot(posterHtml);
+  // Same fallback `probe`/`--dry-run` use: the [data-composition-id] element
+  // (often <html>) doesn't always carry data-duration itself — a plain
+  // render tolerates that by launching a browser to read it live off
+  // window.__hf.duration; --poster needs the number up front, so it takes
+  // the largest declared data-start + data-duration in the file instead.
+  const durationSeconds = root?.durationSeconds ?? resolveFallbackDurationSeconds(posterHtml);
   if (durationSeconds === undefined || !(durationSeconds > 0)) {
     throw new CliError(
       "--poster needs the composition's duration, which could not be read from the entry file.",
       EXIT_CODES.COMPOSITION_INVALID,
-      "Ensure the composition root carries data-duration (see `hfmpeg probe`).",
+      "Ensure the composition root (or its timeline's own root element) carries data-duration "
+        + "(see `hfmpeg probe`).",
     );
   }
 

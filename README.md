@@ -141,7 +141,10 @@ per-command rather than globally — `render` reserves `-q` for `--quality`, so
 `--json` alone (no explicit `--log-level`) defaults `--log-level` to
 `silent`, so `--json`'s whole promise — one parseable document on stdout —
 holds without also having to remember to silence diagnostics yourself. Pass
-an explicit `--log-level` (any value, including `info`) if you want both.
+an explicit `--log-level` (any value, including `info`) or `--verbose` if you
+want both: `render`'s stdout stays exactly the JSON envelope either way,
+because any diagnostics that level would otherwise print are rerouted to
+stderr (never dropped) for the duration of the render.
 
 ---
 

@@ -43,14 +43,19 @@ function withRestoredVerbose(run: () => Promise<void>): Promise<void> {
  * also captures the test runner's own interleaved TAP output if it gets a
  * turn on the event loop first. Collecting chunks and picking out the one
  * that's actually JSON (rather than concatenating everything into one
- * string) keeps this robust to that interleaving.
+ * string) keeps this robust to that interleaving — but only if every
+ * captured chunk is *also* forwarded to the real stdout. Swallowing them
+ * instead ate the test runner's own TAP result lines for whichever test
+ * happened to be mid-`await` when the runner had a turn on the event loop
+ * (reproduced: this file defines 3 tests but a plain run reported only 2 —
+ * the `--verbose` test's own `ok` line never reached the TAP stream).
  */
 async function captureJsonEnvelope(run: () => Promise<unknown>): Promise<unknown> {
   const chunks: string[] = [];
   const original = process.stdout.write.bind(process.stdout);
-  process.stdout.write = ((chunk: string) => {
-    chunks.push(String(chunk));
-    return true;
+  process.stdout.write = ((...args: Parameters<typeof process.stdout.write>) => {
+    chunks.push(String(args[0]));
+    return original(...args);
   }) as typeof process.stdout.write;
   try {
     await run();

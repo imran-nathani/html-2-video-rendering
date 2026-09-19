@@ -430,6 +430,7 @@ async function runRenderJob(
   projectDir: string,
   outputPath: string,
   reporter: ProgressReporter,
+  json: boolean,
 ): Promise<void> {
   const abortController = new AbortController();
   const onSigint = () => abortController.abort();
@@ -457,7 +458,7 @@ async function runRenderJob(
         },
         abortController.signal,
       );
-    });
+    }, { json });
   } finally {
     process.removeListener("SIGINT", onSigint);
     reporter.end();
@@ -616,7 +617,7 @@ async function executeRender(args: RenderArgs): Promise<number> {
     outputResolutionAspectAgnostic: plan.outputResolutionAspectAgnostic,
   });
 
-  await runRenderJob(executeRenderJob, job, projectDir, outputPath, reporter);
+  await runRenderJob(executeRenderJob, job, projectDir, outputPath, reporter, args.json);
 
   const renderTimeMs =
     job.startedAt && job.completedAt
@@ -707,7 +708,7 @@ async function executePosterRender(
   });
 
   try {
-    await runRenderJob(producerFns.executeRenderJob, job, projectDir, framesDir, reporter);
+    await runRenderJob(producerFns.executeRenderJob, job, projectDir, framesDir, reporter, args.json);
 
     const frames = readdirSync(framesDir)
       .filter((name) => name.toLowerCase().endsWith(".png"))
@@ -804,7 +805,7 @@ async function executeBatchRender(
 
     await withConsoleLevelGate(async () => {
       await executeRenderJob(job, projectDir, outputPath, undefined, undefined);
-    });
+    }, { json: args.json });
 
     return {
       output: outputPath,

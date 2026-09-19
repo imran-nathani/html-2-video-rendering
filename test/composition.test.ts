@@ -5,6 +5,7 @@ import {
   findAssetSources,
   findSubCompositionRefs,
   parseVariablesAttr,
+  resolveFallbackDurationSeconds,
   summarizeTimeline,
 } from "../src/composition.js";
 
@@ -45,6 +46,54 @@ test("extractCompositionRoot: reads the [data-composition-id] root's attributes"
 
 test("extractCompositionRoot: returns undefined when there is no composition root", () => {
   assert.equal(extractCompositionRoot("<html><body>hi</body></html>"), undefined);
+});
+
+// Real-world authoring split: data-composition-id lives on <html>, but the
+// timeline's own root duration lives on a separate .clip element — e.g.
+// GX-BROLL/graphic/lower-third-minimal's <main class="clip" data-duration>.
+// extractCompositionRoot correctly reports no duration here (it only reads
+// off the [data-composition-id] tag); resolveFallbackDurationSeconds exists
+// to answer "what's this file's duration" for --poster/probe anyway.
+const SPLIT_ROOT_HTML = `<!doctype html>
+<html data-composition-id="split" data-width="1920" data-height="1080">
+  <body>
+    <main id="root" class="clip" data-start="0" data-duration="4.5" data-width="1920" data-height="1080">
+      <div class="content"></div>
+    </main>
+  </body>
+</html>
+`;
+
+test("extractCompositionRoot: does not see a data-duration declared off a separate timeline-root element", () => {
+  const root = extractCompositionRoot(SPLIT_ROOT_HTML);
+  assert.equal(root?.compositionId, "split");
+  assert.equal(root?.durationSeconds, undefined);
+});
+
+test("resolveFallbackDurationSeconds: recovers the duration from the timeline-root .clip element", () => {
+  assert.equal(resolveFallbackDurationSeconds(SPLIT_ROOT_HTML), 4.5);
+});
+
+test("resolveFallbackDurationSeconds: returns undefined when nothing declares a positive data-duration", () => {
+  assert.equal(resolveFallbackDurationSeconds("<html><body><div data-duration=\"0\"></div></body></html>"), undefined);
+  assert.equal(resolveFallbackDurationSeconds("<html><body>hi</body></html>"), undefined);
+});
+
+test("resolveFallbackDurationSeconds: takes the latest data-start + data-duration end across multiple elements", () => {
+  const html = `<html><body>
+    <div data-start="0" data-duration="2"></div>
+    <div data-start="3" data-duration="1.5"></div>
+  </body></html>`;
+  // 0+2=2, 3+1.5=4.5 -> latest end wins.
+  assert.equal(resolveFallbackDurationSeconds(html), 4.5);
+});
+
+test("extractCompositionRoot: still prefers its own data-duration when the root declares one directly", () => {
+  const root = extractCompositionRoot(SAMPLE_HTML);
+  assert.equal(root?.durationSeconds, 5);
+  // resolveFallbackDurationSeconds would agree here too (root also carries
+  // data-start/data-duration itself), so callers can safely `??` the two.
+  assert.equal(resolveFallbackDurationSeconds(SAMPLE_HTML), 5);
 });
 
 test("parseVariablesAttr: drops malformed declarations instead of throwing", () => {

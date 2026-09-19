@@ -82,6 +82,66 @@ test("handleRuntimeError: a RenderQualityError's warnings reach the --json error
   assert.deepEqual(envelope.error.warnings[0].details, { retryable: false });
 });
 
+test("handleRuntimeError: a sub_timeline_readiness_timeout warning gets an hfmpeg fixHint naming data-no-timeline", () => {
+  // Q2 (`03-FEATURE-LIST.md`): a composition that never registers a GSAP
+  // timeline and never opts out with `data-no-timeline` hangs ~45s and then
+  // fails with this code — but the producer's own message doesn't name the
+  // fix. hfmpeg attaches one itself, both per-warning and as the top-level
+  // error hint (so it shows up in plain-text output too, not only `--json`).
+  const err = Object.assign(
+    new Error("Render blocked by 1 correctness warning: sub_timeline_readiness_timeout"),
+    {
+      name: "RenderQualityError",
+      warnings: [
+        {
+          code: "sub_timeline_readiness_timeout",
+          message: "Sub-composition timelines did not become ready within 45000ms",
+          stage: "capture-readiness",
+        },
+      ],
+    },
+  );
+
+  const captured = withCapturedOutput(() => {
+    handleRuntimeError(err, true);
+  });
+
+  const envelope = JSON.parse(captured);
+  assert.match(envelope.error.hint, /data-no-timeline/);
+  assert.match(envelope.error.warnings[0].fixHint, /data-no-timeline/);
+});
+
+test("handleRuntimeError: a sub_timeline_readiness_timeout hint also reaches the plain-text error output", () => {
+  const err = Object.assign(
+    new Error("Render blocked by 1 correctness warning: sub_timeline_readiness_timeout"),
+    {
+      name: "RenderQualityError",
+      warnings: [{ code: "sub_timeline_readiness_timeout", message: "…", stage: "capture-readiness" }],
+    },
+  );
+
+  const captured = withCapturedOutput(() => {
+    handleRuntimeError(err, false);
+  });
+
+  assert.match(captured, /data-no-timeline/);
+});
+
+test("handleRuntimeError: a warning code hfmpeg has no fixHint for is passed through without one", () => {
+  const err = Object.assign(new Error("Render blocked by 1 correctness warning: some_other_code"), {
+    name: "RenderQualityError",
+    warnings: [{ code: "some_other_code", message: "…" }],
+  });
+
+  const captured = withCapturedOutput(() => {
+    handleRuntimeError(err, true);
+  });
+
+  const envelope = JSON.parse(captured);
+  assert.equal(envelope.error.hint, undefined);
+  assert.equal(envelope.error.warnings[0].fixHint, undefined);
+});
+
 test("handleRuntimeError: an error with no structured detail keeps the envelope's original shape", () => {
   const captured = withCapturedOutput(() => {
     handleRuntimeError(new Error("boom"), true);

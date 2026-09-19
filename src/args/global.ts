@@ -16,6 +16,13 @@ export interface GlobalFlags {
   verbose: boolean;
   noColor: boolean;
   logLevel: LogLevel;
+  /**
+   * Whether `--log-level` was actually passed, as opposed to `logLevel`
+   * merely holding its default. Without this, a caller that wants to apply
+   * a conditional default (`cli.ts`'s `--json` implies `--log-level silent`)
+   * can't tell "user asked for info" apart from "nobody said anything".
+   */
+  logLevelExplicit?: boolean;
   /** `--tmp-dir <path>` — where render scratch directories are created. */
   tmpDir?: string;
   /** `--cache-dir <path>` — where downloaded Chromium/FFmpeg live (lite builds). */
@@ -31,6 +38,15 @@ function defaultGlobalFlags(): GlobalFlags {
  * preserving the relative order/positions of the remaining tokens so
  * command-specific parsers (and the command-name lookup in `cli.ts`) see
  * exactly the argv they'd see if these flags weren't there at all.
+ *
+ * Also applies one cross-flag default: `--json` promises machine-parseable
+ * stdout, but `defaultLogger`/`@hyperframes/engine`'s bare `console.log`
+ * tracing lands on stdout ahead of the JSON envelope unless `--log-level`
+ * is `silent` — so a caller who passes `--json` alone gets output that
+ * looks like it starts with JSON but fails `JSON.parse` outright. Since
+ * `--json` stays parsed per-command (see the class doc above) rather than
+ * being extracted here itself, it's still visible in `rest` at this point;
+ * an *explicit* `--log-level` (any value, including `info`) always wins.
  */
 export function extractGlobalFlags(argv: string[]): { flags: GlobalFlags; rest: string[] } {
   const flags = defaultGlobalFlags();
@@ -59,6 +75,7 @@ export function extractGlobalFlags(argv: string[]): { flags: GlobalFlags; rest: 
         );
       }
       flags.logLevel = value as LogLevel;
+      flags.logLevelExplicit = true;
       i += 2;
       continue;
     }
@@ -79,6 +96,10 @@ export function extractGlobalFlags(argv: string[]): { flags: GlobalFlags; rest: 
 
     rest.push(token);
     i += 1;
+  }
+
+  if (rest.includes("--json") && !flags.logLevelExplicit) {
+    flags.logLevel = "silent";
   }
 
   return { flags, rest };

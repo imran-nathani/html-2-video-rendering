@@ -5,6 +5,7 @@ import {
   findAssetSources,
   findSubCompositionRefs,
   REMOTE_SRC_RE,
+  resolveFallbackDurationSeconds,
   summarizeTimeline,
 } from "../composition.js";
 import { parseFpsArg } from "../args/fps.js";
@@ -88,11 +89,13 @@ function describeComposition(projectDir: string, entryFile: string | undefined, 
   const timeline = summarizeTimeline(html);
   const subCompositions = findSubCompositionRefs(html);
   const assets = resolveAssetRefs(projectDir, findAssetSources(html));
+  // `render` derives duration the same way — see resolveFallbackDurationSeconds.
+  const durationSeconds = root?.durationSeconds ?? resolveFallbackDurationSeconds(html);
 
   let frameCountAtFps: number | undefined;
-  if (fpsArg !== undefined && root?.durationSeconds !== undefined) {
+  if (fpsArg !== undefined && durationSeconds !== undefined) {
     const fps = parseFpsArg(fpsArg);
-    frameCountAtFps = Math.round((root.durationSeconds * fps.num) / fps.den);
+    frameCountAtFps = Math.round((durationSeconds * fps.num) / fps.den);
   }
 
   return {
@@ -101,7 +104,7 @@ function describeComposition(projectDir: string, entryFile: string | undefined, 
     width: root?.width,
     height: root?.height,
     fps: root?.fps,
-    durationSeconds: root?.durationSeconds,
+    durationSeconds,
     frameCountAtFps,
     clipCount: timeline.clipCount,
     trackCount: timeline.trackCount,
@@ -141,7 +144,7 @@ function listCompositions(projectDir: string) {
         compositionId: root.compositionId,
         width: root.width,
         height: root.height,
-        durationSeconds: root.durationSeconds,
+        durationSeconds: root.durationSeconds ?? resolveFallbackDurationSeconds(html),
       });
     }
   };

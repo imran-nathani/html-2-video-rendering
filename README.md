@@ -91,24 +91,20 @@ FFmpeg) — see the [FAQ](#faq) for why.
 
 ## Licensing
 
-`hfmpeg`'s own source is [MIT](LICENSE). Its runtime npm dependencies
-(`@hyperframes/*`, `@puppeteer/browsers`, and everything transitively pulled
-in) are all permissive too (Apache-2.0, MIT, BSD, ISC) — no copyleft
-dependencies anywhere in the source tree.
+`hfmpeg` is dual-licensed under:
 
-The one place licensing actually varies is **what a given release archive
-bundles**:
+1. **GNU Affero General Public License v3.0 (AGPLv3)** — for open-source, personal, evaluation, or non-commercial use.
+2. **Commercial License** — for commercial use, SaaS applications, proprietary integration, closed-source distribution, or organizations unable to comply with AGPLv3 copyleft terms.
 
-- **lite**: bundles nothing third-party. Fully permissive.
-- **editor**: bundles Chromium's `chrome-headless-shell` (BSD-style) and a
-  Node runtime (MIT-style). No FFmpeg, so no GPL content at all. Fully
-  permissive.
-- **standalone**: additionally bundles FFmpeg/FFprobe (**GPL v3**). FFmpeg is
-  only ever invoked as a subprocess — never linked — so this doesn't affect
-  `hfmpeg`'s own license, but the *archive* carries FFmpeg's redistribution
-  obligations as "mere aggregation": each standalone archive ships a
-  `THIRD-PARTY-LICENSES/` directory with the GPL license text and a
-  corresponding-source URL for the exact bundled build.
+See the [LICENSE](LICENSE) file for complete details and commercial licensing contact information.
+
+Its runtime npm dependencies (`@hyperframes/*`, `@puppeteer/browsers`, and everything transitively pulled in) are all permissive (Apache-2.0, MIT, BSD, ISC).
+
+What a given release archive **bundles**:
+
+- **lite**: bundles no third-party binaries.
+- **editor**: bundles Chromium's `chrome-headless-shell` (BSD-style) and a Node runtime (MIT-style).
+- **standalone**: additionally bundles FFmpeg/FFprobe (**GPL v3**). FFmpeg is invoked as an isolated subprocess ("mere aggregation"); each standalone archive ships a `THIRD-PARTY-LICENSES/` directory with notice texts.
 
 ## Commands
 
@@ -141,6 +137,14 @@ Recognised in any position, for every command:
 `--json` and `--quiet`/`-q` are accepted by every command too, but are parsed
 per-command rather than globally — `render` reserves `-q` for `--quality`, so
 `--quiet` has no short form there.
+
+`--json` alone (no explicit `--log-level`) defaults `--log-level` to
+`silent`, so `--json`'s whole promise — one parseable document on stdout —
+holds without also having to remember to silence diagnostics yourself. Pass
+an explicit `--log-level` (any value, including `info`) or `--verbose` if you
+want both: `render`'s stdout stays exactly the JSON envelope either way,
+because any diagnostics that level would otherwise print are rerouted to
+stderr (never dropped) for the duration of the render.
 
 ---
 
@@ -669,6 +673,13 @@ attributable without a regex:
 apply. Progress events likewise carry `totalFrames`/`framesCompleted` as
 fields once a render reaches capture, rather than only inside the human
 `stage` string; `progress` is a percentage (`0`–`100`).
+
+A warning `hfmpeg` recognises also carries its own `fixHint` (in addition to
+the top-level `error.hint`) — e.g. `sub_timeline_readiness_timeout` (a
+composition that never registers a timeline and never opts out with
+`data-no-timeline`, so the ~45s wait always times out) names
+`data-no-timeline` and `--player-ready-timeout` as the fix, rather than only
+the bare "did not become ready" message the render pipeline itself reports.
 
 **How do I cancel a running render?**
 Ctrl-C (`SIGINT`). `hfmpeg` finishes cancelling cleanly and exits with code

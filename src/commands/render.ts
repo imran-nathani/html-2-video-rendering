@@ -32,7 +32,7 @@ import {
   type ProgressReporter,
 } from "../output/progress.js";
 import { parsePosterTime, planPosterCapture } from "../poster.js";
-import { extractCompositionRoot } from "../composition.js";
+import { extractCompositionRoot, resolveFallbackDurationSeconds } from "../composition.js";
 import { logDebug } from "../output/log.js";
 import { readEntryHtml, resolveProjectInput } from "../project.js";
 import { createProducerLogger, withConsoleLevelGate } from "../runtime/logger.js";
@@ -289,9 +289,10 @@ async function reportDryRun(
   entryFile: string | undefined,
 ): Promise<number> {
   const outputPath = args.batch ? args.output! : resolve(args.output!);
-  const root = extractCompositionRoot(readEntryHtml(projectDir, entryFile));
+  const dryRunHtml = readEntryHtml(projectDir, entryFile);
+  const root = extractCompositionRoot(dryRunHtml);
 
-  const durationSeconds = root?.durationSeconds;
+  const durationSeconds = root?.durationSeconds ?? resolveFallbackDurationSeconds(dryRunHtml);
   const totalFrames =
     durationSeconds !== undefined
       ? Math.round((durationSeconds * plan.fps.num) / plan.fps.den)
@@ -429,6 +430,7 @@ async function runRenderJob(
   projectDir: string,
   outputPath: string,
   reporter: ProgressReporter,
+  json: boolean,
 ): Promise<void> {
   const abortController = new AbortController();
   const onSigint = () => abortController.abort();
@@ -456,7 +458,7 @@ async function runRenderJob(
         },
         abortController.signal,
       );
-    });
+    }, { json });
   } finally {
     process.removeListener("SIGINT", onSigint);
     reporter.end();
@@ -615,7 +617,7 @@ async function executeRender(args: RenderArgs): Promise<number> {
     outputResolutionAspectAgnostic: plan.outputResolutionAspectAgnostic,
   });
 
-  await runRenderJob(executeRenderJob, job, projectDir, outputPath, reporter);
+  await runRenderJob(executeRenderJob, job, projectDir, outputPath, reporter, args.json);
 
   const renderTimeMs =
     job.startedAt && job.completedAt
@@ -628,7 +630,7 @@ async function executeRender(args: RenderArgs): Promise<number> {
     format: plan.format,
     fps: plan.fps,
     outcome: job.outcome ?? "completed",
-    warnings: job.warnings ?? [],
+    warnings: normalizeWarnings(job.warnings),
     totalFrames: job.totalFrames,
     framesRendered: job.framesRendered,
     durationSeconds: job.duration,
@@ -663,13 +665,20 @@ async function executePosterRender(
   progressMode: ProgressMode,
   producerFns: { createRenderJob: CreateRenderJob; executeRenderJob: ExecuteRenderJob },
 ): Promise<number> {
-  const root = extractCompositionRoot(readEntryHtml(projectDir, entryFile));
-  const durationSeconds = root?.durationSeconds;
+  const posterHtml = readEntryHtml(projectDir, entryFile);
+  const root = extractCompositionRoot(posterHtml);
+  // Same fallback `probe`/`--dry-run` use: the [data-composition-id] element
+  // (often <html>) doesn't always carry data-duration itself — a plain
+  // render tolerates that by launching a browser to read it live off
+  // window.__hf.duration; --poster needs the number up front, so it takes
+  // the largest declared data-start + data-duration in the file instead.
+  const durationSeconds = root?.durationSeconds ?? resolveFallbackDurationSeconds(posterHtml);
   if (durationSeconds === undefined || !(durationSeconds > 0)) {
     throw new CliError(
       "--poster needs the composition's duration, which could not be read from the entry file.",
       EXIT_CODES.COMPOSITION_INVALID,
-      "Ensure the composition root carries data-duration (see `hfmpeg probe`).",
+      "Ensure the composition root (or its timeline's own root element) carries data-duration "
+        + "(see `hfmpeg probe`).",
     );
   }
 
@@ -699,7 +708,7 @@ async function executePosterRender(
   });
 
   try {
-    await runRenderJob(producerFns.executeRenderJob, job, projectDir, framesDir, reporter);
+    await runRenderJob(producerFns.executeRenderJob, job, projectDir, framesDir, reporter, args.json);
 
     const frames = readdirSync(framesDir)
       .filter((name) => name.toLowerCase().endsWith(".png"))
@@ -729,7 +738,7 @@ async function executePosterRender(
         fps: posterPlan.fps,
       },
       outcome: job.outcome ?? "completed",
-      warnings: job.warnings ?? [],
+      warnings: normalizeWarnings(job.warnings),
       renderTimeMs:
         job.startedAt && job.completedAt
           ? job.completedAt.getTime() - job.startedAt.getTime()
@@ -796,12 +805,12 @@ async function executeBatchRender(
 
     await withConsoleLevelGate(async () => {
       await executeRenderJob(job, projectDir, outputPath, undefined, undefined);
-    });
+    }, { json: args.json });
 
     return {
       output: outputPath,
       outcome: job.outcome ?? "completed",
-      warnings: job.warnings ?? [],
+      warnings: normalizeWarnings(job.warnings),
       totalFrames: job.totalFrames,
       framesRendered: job.framesRendered,
     };
@@ -859,24 +868,32 @@ async function executeBatchRender(
 const MISSING_BINARY_MESSAGE_RE = /\bbinary not found\b/i;
 
 /**
- * Pull the producer's `RenderWarning[]` off a `RenderQualityError` so the
- * codes that blocked the render survive into the `--json` error envelope.
- *
- * Upstream builds that error with `new RenderQualityError(job.warnings)` and
- * keeps the array on `.warnings`, but the only *machine-readable* copy it
- * publishes is a `[WARN] … {"warningCodes":[…]}` line on stderr — the error's
- * `message` interpolates the codes into prose. Without this, attributing a
- * strict-mode failure to a code means regexing that message or scraping logs.
- *
- * Defensive about the shape (unknown-typed, per-entry `code` check) because
- * it is an untyped field on a caught error, not something we construct.
+ * hfmpeg-authored remediation for warning codes whose bare producer message
+ * doesn't name the fix. `sub_timeline_readiness_timeout` in particular is a
+ * ~45s wait (`playerReadyTimeout`, configurable via `--player-ready-timeout`)
+ * before failing on a composition that never intended to register a GSAP
+ * timeline in the first place — `data-no-timeline` is the documented escape
+ * hatch, but the producer's own message doesn't mention it.
  */
-function extractRenderWarnings(err: unknown): StructuredWarning[] | undefined {
-  if (!err || typeof err !== "object" || !("warnings" in err)) return undefined;
-  const raw = (err as { warnings?: unknown }).warnings;
-  if (!Array.isArray(raw)) return undefined;
+const WARNING_FIX_HINTS: Record<string, string> = {
+  sub_timeline_readiness_timeout:
+    "If this composition never registers a timeline on window.__timelines, add data-no-timeline to its root element to skip this wait. Otherwise, --player-ready-timeout <ms> raises the budget it's failing against.",
+  sub_timeline_script_failure:
+    "A script this composition depends on (e.g. a CDN-hosted timeline library) failed to load. Check the URL is reachable, or vendor it locally — `hfmpeg lint --hermetic` finds every remote reference in the composition.",
+};
 
-  const warnings = raw.flatMap((entry): StructuredWarning[] => {
+/**
+ * Normalize a producer `RenderWarning[]` (untyped on the wire — either off a
+ * caught `RenderQualityError` or off a completed `RenderJob.warnings`) into
+ * `StructuredWarning[]`, attaching an hfmpeg `fixHint` for codes we recognise.
+ *
+ * Defensive about the input shape (unknown-typed, per-entry `code` check)
+ * because it's never something we construct ourselves.
+ */
+function normalizeWarnings(raw: unknown): StructuredWarning[] {
+  if (!Array.isArray(raw)) return [];
+
+  return raw.flatMap((entry): StructuredWarning[] => {
     if (!entry || typeof entry !== "object") return [];
     const { code, message, stage, details } = entry as Record<string, unknown>;
     if (typeof code !== "string") return [];
@@ -886,10 +903,25 @@ function extractRenderWarnings(err: unknown): StructuredWarning[] | undefined {
         message: typeof message === "string" ? message : undefined,
         stage: typeof stage === "string" ? stage : undefined,
         details: details && typeof details === "object" ? (details as Record<string, unknown>) : undefined,
+        fixHint: WARNING_FIX_HINTS[code],
       },
     ];
   });
+}
 
+/**
+ * Pull the producer's `RenderWarning[]` off a `RenderQualityError` so the
+ * codes that blocked the render survive into the `--json` error envelope.
+ *
+ * Upstream builds that error with `new RenderQualityError(job.warnings)` and
+ * keeps the array on `.warnings`, but the only *machine-readable* copy it
+ * publishes is a `[WARN] … {"warningCodes":[…]}` line on stderr — the error's
+ * `message` interpolates the codes into prose. Without this, attributing a
+ * strict-mode failure to a code means regexing that message or scraping logs.
+ */
+function extractRenderWarnings(err: unknown): StructuredWarning[] | undefined {
+  if (!err || typeof err !== "object" || !("warnings" in err)) return undefined;
+  const warnings = normalizeWarnings((err as { warnings?: unknown }).warnings);
   return warnings.length > 0 ? warnings : undefined;
 }
 
@@ -899,13 +931,19 @@ export function handleRuntimeError(err: unknown, json: boolean): number {
   const code = err && typeof err === "object" && "code" in err ? (err as { code?: unknown }).code : undefined;
   let exitCode: ExitCode = EXIT_CODES.RENDER_FAILED;
   let details: CliErrorDetails | undefined;
+  let hint: string | undefined;
   if (err instanceof Error && "exitCode" in err) {
     exitCode = (err as CliError).exitCode;
   } else if (name === "RenderCancelledError") {
     exitCode = EXIT_CODES.CANCELLED;
   } else if (name === "RenderQualityError") {
     exitCode = EXIT_CODES.LINT_OR_STRICT_FAILED;
-    details = { reason: "correctness_warnings", warnings: extractRenderWarnings(err) };
+    const warnings = extractRenderWarnings(err);
+    details = { reason: "correctness_warnings", warnings };
+    // Surface the first known fix as the top-level error hint too, so it
+    // shows up in plain-text output (`Error: … \n <hint>`), not only buried
+    // in a per-warning `fixHint` a `--json` consumer has to go looking for.
+    hint = warnings?.find((w) => w.fixHint !== undefined)?.fixHint;
   } else if (code === "ENOENT" || (message && MISSING_BINARY_MESSAGE_RE.test(message))) {
     // Belt-and-suspenders alongside assertRenderDependencies (above): this
     // catches the one case the upfront check doesn't (it trusts an explicit
@@ -915,7 +953,7 @@ export function handleRuntimeError(err: unknown, json: boolean): number {
     exitCode = EXIT_CODES.MISSING_DEPENDENCY;
   }
 
-  const cliError = toCliError(err, exitCode, details);
+  const cliError = toCliError(err, exitCode, details, hint);
   printCliError("render", cliError, json);
   return cliError.exitCode;
 }

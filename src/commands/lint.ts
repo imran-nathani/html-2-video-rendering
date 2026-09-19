@@ -2,6 +2,7 @@ import { existsSync, statSync } from "node:fs";
 import { findRemoteReferences } from "../hermetic.js";
 import { CliError, EXIT_CODES, toCliError, usageError } from "../output/errors.js";
 import { printCliError, printJsonEnvelope } from "../output/json.js";
+import { isVerbose } from "../output/log.js";
 import { readEntryHtml, resolveProjectInput } from "../project.js";
 import { loadProducer } from "../runtime/producer.js";
 
@@ -9,7 +10,6 @@ export interface LintArgs {
   positionalDir?: string;
   composition?: string;
   strict: boolean;
-  verbose: boolean;
   json: boolean;
   /** `--hermetic`: escalate every remote reference from `info` to `error`. */
   hermetic: boolean;
@@ -54,7 +54,7 @@ function remoteReferenceFindings(
 }
 
 export function parseLintArgs(argv: string[]): LintArgs {
-  const args: LintArgs = { strict: false, verbose: false, json: false, hermetic: false };
+  const args: LintArgs = { strict: false, json: false, hermetic: false };
   let i = 0;
   while (i < argv.length) {
     const token = argv[i];
@@ -70,11 +70,10 @@ export function parseLintArgs(argv: string[]): LintArgs {
       i += 1;
       continue;
     }
-    if (token === "--verbose") {
-      args.verbose = true;
-      i += 1;
-      continue;
-    }
+    // `--verbose` is deliberately *not* handled here: it's a global flag
+    // (`args/global.ts`), stripped out of argv before `cli.ts` ever calls
+    // this parser. A local `--verbose` branch here would be permanently
+    // dead code — see `isVerbose()` below for how lint actually observes it.
     if (token === "--hermetic") {
       args.hermetic = true;
       i += 1;
@@ -121,7 +120,9 @@ export async function runLintCommand(args: LintArgs): Promise<number> {
     const errorCount = result.errorCount + remote.filter((f) => f.severity === "error").length;
     const infoCount = result.infoCount + remote.filter((f) => f.severity === "info").length;
 
-    const findings = args.verbose
+    // `--verbose` is a global flag (see `parseLintArgs`), so it's read here
+    // via `isVerbose()` rather than a field on `args`.
+    const findings = isVerbose()
       ? allFindings
       : allFindings.filter((f) => f.severity !== "info");
 

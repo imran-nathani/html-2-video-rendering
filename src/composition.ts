@@ -118,6 +118,42 @@ export function extractCompositionRoot(html: string): CompositionRootInfo | unde
   };
 }
 
+/**
+ * Best-effort duration fallback for callers that need a number *before*
+ * launching a browser (`--poster`, `probe`), for the common authoring split
+ * where `data-composition-id` sits on `<html>` but the timeline's own root
+ * duration lives on a separate element — e.g.
+ * `<main class="clip" data-start="0" data-duration="4.5">` — which
+ * `extractCompositionRoot` correctly does not treat as the composition root
+ * (`data-composition-id` is the one unambiguous anchor for that), so its
+ * `durationSeconds` comes back `undefined` even though the file plainly
+ * declares one.
+ *
+ * Takes the largest `data-start + data-duration` across every element that
+ * declares both, mirroring (and widening) the same fallback the HF runtime
+ * bridge itself performs at render time when the root has no static
+ * duration (there: sub-compositions only; here: any timeline element,
+ * which also covers a bare `.clip` root).
+ *
+ * Not a substitute for the real render path's live GSAP-timeline probe
+ * (`getCompositionDuration` against `window.__hf.duration`): a duration
+ * computed entirely at runtime by script still needs a browser to resolve.
+ * That's exactly why a plain `render` (no `--poster`) already launches one
+ * when the static duration is unknown, while `--poster`/`probe` — which
+ * need the number up front, before anything is launched — cannot.
+ */
+export function resolveFallbackDurationSeconds(html: string): number | undefined {
+  let maxEnd: number | undefined;
+  for (const tag of findAllTagsWithAttr(html, "data-duration")) {
+    const duration = Number(extractAttr(tag, "data-duration"));
+    if (!Number.isFinite(duration) || duration <= 0) continue;
+    const start = Number(extractAttr(tag, "data-start") ?? "0") || 0;
+    const end = start + duration;
+    if (maxEnd === undefined || end > maxEnd) maxEnd = end;
+  }
+  return maxEnd;
+}
+
 export interface ElementCounts {
   img: number;
   video: number;
